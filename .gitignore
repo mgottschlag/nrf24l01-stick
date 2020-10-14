@@ -1,0 +1,5 @@
+firmware/target
+driver/target
+protocol/target
+*.swp
+.gdb_history
