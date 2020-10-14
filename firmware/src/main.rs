@@ -60,9 +60,12 @@ const APP: () = {
 
         let serial = usbd_serial::SerialPort::new(usb_bus);
 
-        let usb_dev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0x16c0, 0x27dd))
-            .manufacturer("Fake company")
-            .product("Serial port")
+        // This PID/VID combination is selected from the pid.codes PID space and only intended for
+        // software development. It is not universally unique and should not be used outside of
+        // test environments!
+        let usb_dev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0x1209, 0x000d))
+            .manufacturer("Mathias Gottschlag")
+            .product("nrf24l01-stick")
             .serial_number("TEST")
             .device_class(usbd_serial::USB_CLASS_CDC)
             .build();

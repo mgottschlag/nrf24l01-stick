@@ -1,0 +1,5 @@
+# File: /etc/udev/rules.d/20_nrf24l01stick.rules
+# After installation, execute the appropriate command to reload the udev rules:
+# - /etc/init.d/udev restart
+# - udevadm control --reload-rules && udevadm trigger
+SUBSYSTEM=="tty", ATTRS{manufacturer}=="Mathias Gottschlag", ATTRS{product}=="nrf24l01-stick", SYMLINK+="ttyUSB_nrf24l01"
