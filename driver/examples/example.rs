@@ -1,8 +1,7 @@
-use tokio::io::BufReader;
 use tokio::io::AsyncBufReadExt;
+use tokio::io::BufReader;
 
-
-use nrf24l01_stick_driver::{Configuration, CrcMode, DataRate, NRF24L01, MAX_PAYLOAD_LEN};
+use nrf24l01_stick_driver::{Configuration, CrcMode, DataRate, MAX_PAYLOAD_LEN, NRF24L01};
 
 #[tokio::main]
 async fn main() {
@@ -16,13 +15,16 @@ async fn main() {
     let mut nrf24l01 = NRF24L01::open_default(config)
         .await
         .expect("could not open device");
-    nrf24l01.set_receive_addr(
-        Some((&[0xb3u8, 0xb3u8, 0xb3u8, 0xb3u8, 0x00u8] as &[u8]).into()),
-        None,
-        None,
-        None,
-        None,
-    ).await.expect("could not set receive address");
+    nrf24l01
+        .set_receive_addr(
+            Some((&[0xb3u8, 0xb3u8, 0xb3u8, 0xb3u8, 0x00u8] as &[u8]).into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("could not set receive address");
     let mut receive = Some(nrf24l01.receive().await.expect("could not start receiving"));
 
     let stdin = BufReader::new(tokio::io::stdin());

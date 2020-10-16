@@ -10,3 +10,4 @@ edition = "2018"
 nrf24l01-stick-protocol = { path = "../protocol" }
 thiserror = "1.0"
 tokio = { version = "0.2", features = [ "full" ] }
+tokio-serial = "4.3.3"

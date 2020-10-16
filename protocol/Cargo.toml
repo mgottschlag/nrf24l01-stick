@@ -1,5 +1,5 @@
 [package]
-name = "protocol"
+name = "nrf24l01-stick-protocol"
 version = "0.1.0"
 authors = ["Mathias Gottschlag <mgottschlag@gmail.com>"]
 edition = "2018"
