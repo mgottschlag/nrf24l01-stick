@@ -1,5 +1,7 @@
 firmware/target
 driver/target
+driver/Cargo.lock
 protocol/target
+protocol/Cargo.lock
 *.swp
 .gdb_history
