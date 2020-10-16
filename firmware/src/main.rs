@@ -2,68 +2,67 @@
 #![no_main]
 #![no_std]
 
-use core::mem::MaybeUninit;
-
+use cortex_m::asm::delay;
 use embedded_hal::digital::v2::OutputPin;
 use panic_semihosting as _;
-use stm32f4xx_hal::gpio::{gpiog, Output, PushPull};
-use stm32f4xx_hal::otg_hs::{UsbBus, USB};
-use stm32f4xx_hal::prelude::*;
+use stm32f1xx_hal::gpio::{gpioc, Output, PushPull};
+use stm32f1xx_hal::prelude::*;
+use stm32f1xx_hal::usb::{Peripheral, UsbBus, UsbBusType};
 use usb_device::bus::UsbBusAllocator;
 use usb_device::prelude::*;
 
-static mut EP_MEMORY: [u32; 1024] = [0; 1024];
-
-static mut USB_BUS: MaybeUninit<UsbBusAllocator<UsbBus<USB>>> = MaybeUninit::uninit();
-
-#[rtic::app(device = stm32f4xx_hal::stm32, peripherals = true)]
+#[rtic::app(device = stm32f1xx_hal::stm32, peripherals = true)]
 const APP: () = {
     struct Resources {
-        usb_dev: UsbDevice<'static, UsbBus<USB>>,
-        serial: usbd_serial::SerialPort<'static, UsbBus<USB>>,
-        green: gpiog::PG13<Output<PushPull>>,
-        red: gpiog::PG14<Output<PushPull>>,
+        usb_dev: UsbDevice<'static, UsbBusType>,
+        serial: usbd_serial::SerialPort<'static, UsbBusType>,
+        led: gpioc::PC13<Output<PushPull>>,
     }
 
     #[init]
     fn init(ctx: init::Context) -> init::LateResources {
-        let rcc = ctx.device.RCC.constrain();
+        static mut USB_BUS: Option<UsbBusAllocator<UsbBusType>> = None;
 
-        let _clocks = rcc
+        let mut flash = ctx.device.FLASH.constrain();
+        let mut rcc = ctx.device.RCC.constrain();
+
+        let clocks = rcc
             .cfgr
             .use_hse(8.mhz())
             .sysclk(48.mhz())
             .pclk1(24.mhz())
-            .require_pll48clk()
-            .freeze();
+            .freeze(&mut flash.acr);
 
-        let gpiog = ctx.device.GPIOG.split();
-        let mut green = gpiog.pg13.into_push_pull_output();
-        green.set_high().ok(); // Turn on
-        let mut red = gpiog.pg14.into_push_pull_output();
-        red.set_high().ok(); // Turn on
+        assert!(clocks.usbclk_valid());
 
-        let gpiob = ctx.device.GPIOB.split();
+        let mut gpioc = ctx.device.GPIOC.split(&mut rcc.apb2);
+        let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
+        led.set_high().ok(); // Turn on
 
-        let usb = USB {
-            usb_global: ctx.device.OTG_HS_GLOBAL,
-            usb_device: ctx.device.OTG_HS_DEVICE,
-            usb_pwrclk: ctx.device.OTG_HS_PWRCLK,
-            pin_dm: gpiob.pb14.into_alternate_af12(),
-            pin_dp: gpiob.pb15.into_alternate_af12(),
-            //hclk: clocks.hclk(),
+        let mut gpioa = ctx.device.GPIOA.split(&mut rcc.apb2);
+
+        // Force reset using the pull-up resistor on the D+ line (only for development).
+        let mut usb_dp = gpioa.pa12.into_push_pull_output(&mut gpioa.crh);
+        usb_dp.set_low().unwrap();
+        delay(clocks.sysclk().0 / 100);
+
+        let usb_dm = gpioa.pa11;
+        let usb_dp = usb_dp.into_floating_input(&mut gpioa.crh);
+
+        let usb = Peripheral {
+            usb: ctx.device.USB,
+            pin_dm: usb_dm,
+            pin_dp: usb_dp,
         };
 
-        unsafe { USB_BUS.as_mut_ptr().write(UsbBus::new(usb, &mut EP_MEMORY)) };
+        *USB_BUS = Some(UsbBus::new(usb));
 
-        let usb_bus = unsafe { USB_BUS.as_ptr().as_ref().unwrap() };
-
-        let serial = usbd_serial::SerialPort::new(usb_bus);
+        let serial = usbd_serial::SerialPort::new(USB_BUS.as_ref().unwrap());
 
         // This PID/VID combination is selected from the pid.codes PID space and only intended for
         // software development. It is not universally unique and should not be used outside of
         // test environments!
-        let usb_dev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0x1209, 0x000d))
+        let usb_dev = UsbDeviceBuilder::new(USB_BUS.as_ref().unwrap(), UsbVidPid(0x1209, 0x000d))
             .manufacturer("Mathias Gottschlag")
             .product("nrf24l01-stick")
             .serial_number("TEST")
@@ -73,8 +72,7 @@ const APP: () = {
         init::LateResources {
             usb_dev,
             serial,
-            green,
-            red,
+            led,
         }
     }
 

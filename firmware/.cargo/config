@@ -1,4 +1,4 @@
-[target.thumbv7em-none-eabihf]
+[target.thumbv7m-none-eabi]
 runner = "arm-none-eabi-gdb -x openocd.gdb"
 rustflags = [
   "-C", "link-arg=-Tlink.x",
@@ -6,4 +6,4 @@ rustflags = [
 ]
 
 [build]
-target = "thumbv7em-none-eabihf"
+target = "thumbv7m-none-eabi"

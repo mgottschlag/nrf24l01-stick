@@ -11,7 +11,7 @@ cortex-m-rtic = "0.5.3"
 embedded-hal = "0.2.3"
 embedded-nrf24l01 = { git = "https://github.com/mgottschlag/embedded-nrf24l01", branch = "wip" }
 panic-semihosting = "0.5"
-stm32f4xx-hal = { version = "0.8", features = ["stm32f429", "usb_hs", "rt"] }
+stm32f1xx-hal = { version = "0.6", features = ["stm32f103", "stm32-usbd", "rt"] }
 usb-device = "0.2.5"
 usbd-serial = "0.1"
-protocol = { path = "../protocol" }
+nrf24l01-stick-protocol = { path = "../protocol" }
