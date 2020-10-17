@@ -8,7 +8,23 @@ pub const DEVICE_ID: u32 = 0x3246524e;
 pub const CURRENT_VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
-pub enum Packet {
+pub struct Packet {
+    call: u8,
+    content: PacketType,
+}
+
+impl Packet {
+    pub fn serialize(&self, buffer: &mut [u8]) -> Option<usize> {
+        Some(postcard::to_slice(self, buffer).ok()?.len())
+    }
+
+    pub fn deserialize(buffer: &[u8]) -> Option<Packet> {
+        postcard::from_bytes(buffer).ok()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum PacketType {
     Reset,
     ResetDone(Version),
     Config(Configuration),
@@ -21,16 +37,6 @@ pub enum Packet {
     Ack,
     PacketLost,
     Error,
-}
-
-impl Packet {
-    pub fn serialize(&self, buffer: &mut [u8; 256]) -> Option<usize> {
-        Some(postcard::to_slice(self, buffer).ok()?.len())
-    }
-
-    pub fn deserialize(&self, buffer: &[u8; 256]) -> Option<Packet> {
-        postcard::from_bytes(buffer).ok()
-    }
 }
 
 #[derive(Serialize, Deserialize)]
