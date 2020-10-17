@@ -6,8 +6,8 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio_serial::{Serial, SerialPortSettings};
 
-use nrf24l01_stick_protocol::Packet;
 pub use nrf24l01_stick_protocol::{Configuration, CrcMode, DataRate};
+use nrf24l01_stick_protocol::{Packet, RadioPacket, CURRENT_VERSION, DEVICE_ID};
 
 pub const MAX_PAYLOAD_LEN: usize = 32;
 const DEFAULT_TTY: &str = "/dev/ttyUSB_nrf24l01";
@@ -29,13 +29,24 @@ impl NRF24L01 {
         thread::sleep(Duration::from_secs(1));
 
         // Identify the device and try to reset the radio module.
-        if let Packet::ResetDone = nrf.command(Packet::Reset, true).await? {
-            // TODO: Check version information in response packet.
+        if let Packet::ResetDone(version) = nrf.command(Packet::Reset, true).await? {
+            if version.device != DEVICE_ID {
+                return Err(Error::Device(format!(
+                    "the device does not seem to be an NRF24L01 stick, device id {} should be {}",
+                    version.device, DEVICE_ID
+                )));
+            }
+            if version.version != CURRENT_VERSION {
+                return Err(Error::Device(format!(
+                    "wrong device version, version {} should be {}",
+                    version.version, CURRENT_VERSION
+                )));
+            }
         } else {
-            // TODO: Error
+            return Err(Error::Device(
+                "reset failed, unexpected response".to_owned(),
+            ));
         }
-
-        // TODO: Also set the address length
 
         // Apply the initial configuration.
         nrf.configure(config).await?;
@@ -47,24 +58,25 @@ impl NRF24L01 {
         Self::open(DEFAULT_TTY, config).await
     }
 
+    async fn configure(&mut self, config: Configuration) -> Result<(), Error> {
+        self.addr_len = config.addr_len as usize;
+        self.command_ack(Packet::Config(config), true).await
+    }
+
     async fn command(&mut self, _packet: Packet, _discard_rx: bool) -> Result<Packet, Error> {
+        // TODO: Discard RX queue?
         // TODO
         panic!("Not yet implemented.");
     }
 
-    async fn command_ack(&mut self, packet: Packet, _discard_rx: bool) -> Result<(), Error> {
-        let response = self.command(packet, _discard_rx).await?;
+    async fn command_ack(&mut self, packet: Packet, discard_rx: bool) -> Result<(), Error> {
+        let response = self.command(packet, discard_rx).await?;
         match response {
             Packet::Ack => Ok(()),
-            _ => {
-                // TODO: Error
-                Ok(())
-            }
+            _ => Err(Error::Device(
+                "unexpected response type instead of ACK".to_owned(),
+            )),
         }
-    }
-
-    async fn configure(&mut self, config: Configuration) -> Result<(), Error> {
-        self.command_ack(Packet::Config(config), true).await
     }
 
     async fn read_packet(&mut self, timeout: Option<Duration>) -> Result<Packet, Error> {
@@ -87,24 +99,39 @@ pub struct Standby {
 impl Standby {
     pub async fn set_receive_addr(
         &mut self,
-        _a1: Option<Address>,
-        _a2: Option<Address>,
-        _a3: Option<Address>,
-        _a4: Option<Address>,
-        _a5: Option<Address>,
+        a1: Option<Address>,
+        a2: Option<Address>,
+        a3: Option<Address>,
+        a4: Option<Address>,
+        a5: Option<Address>,
     ) -> Result<(), Error> {
-        // TODO: self.nrf.address_len = config.address_len as usize;
-        // TODO
-        panic!("Not yet implemented.");
-    }
-
-    pub async fn receive(self) -> Result<Receiver, Error> {
-        // TODO
-        panic!("Not yet implemented.");
+        let addresses = [a1, a2, a3, a4, a5];
+        let mut addr_bytes = [None, None, None, None, None];
+        for (i, addr) in addresses.iter().enumerate() {
+            if let Some(addr) = addr {
+                if addr.length as usize != self.nrf.addr_len {
+                    return Err(Error::InvalidParam("wrong address length".to_owned()));
+                }
+                addr_bytes[i] = Some(addr.addr);
+            }
+        }
+        self.nrf
+            .command_ack(Packet::SetAddress(addr_bytes), true)
+            .await
     }
 
     pub async fn configure(&mut self, config: Configuration) -> Result<(), Error> {
         self.nrf.configure(config).await
+    }
+
+    pub async fn receive(mut self) -> Result<Receiver, Error> {
+        self.nrf.command_ack(Packet::RX, true).await?;
+        Ok(Receiver { nrf: self.nrf })
+    }
+
+    pub async fn send(mut self) -> Result<Sender, Error> {
+        self.nrf.command_ack(Packet::TX, true).await?;
+        Ok(Sender { nrf: self.nrf })
     }
 }
 
@@ -113,14 +140,32 @@ pub struct Sender {
 }
 
 impl Sender {
-    pub async fn send(&mut self, _address: Address, _payload: &[u8]) -> Result<(), Error> {
-        // TODO
-        panic!("Not yet implemented.");
+    pub async fn send(&mut self, address: Address, payload: &[u8]) -> Result<(), Error> {
+        let mut payload_array = [0u8; 32];
+        payload_array[0..payload.len()].copy_from_slice(payload);
+        let response = self
+            .nrf
+            .command(
+                Packet::Send(RadioPacket {
+                    addr: address.addr,
+                    length: payload.len() as u8,
+                    payload: payload_array,
+                }),
+                false,
+            )
+            .await?;
+        match response {
+            Packet::Ack => Ok(()),
+            Packet::PacketLost => Err(Error::PacketLost),
+            _ => Err(Error::Device(
+                "unexpected packet from device during send operation".to_owned(),
+            )),
+        }
     }
 
-    pub async fn receive(self) -> Result<Receiver, Error> {
-        // TODO
-        panic!("Not yet implemented.");
+    pub async fn receive(mut self) -> Result<Receiver, Error> {
+        self.nrf.command_ack(Packet::RX, true).await?;
+        Ok(Receiver { nrf: self.nrf })
     }
 
     pub async fn standby(mut self) -> Result<Standby, Error> {
@@ -148,20 +193,22 @@ impl Receiver {
                 _ => {
                     // We should never receive any other type of packet, so we should treat this as
                     // an error.
-                    // TODO
+                    return Err(Error::Device(
+                        "received other packet from device during receive operation".to_owned(),
+                    ));
                 }
             }
         }
     }
 
-    pub async fn send(self) -> Result<Sender, Error> {
-        // TODO
-        panic!("Not yet implemented.");
-    }
-
     pub async fn standby(mut self) -> Result<Standby, Error> {
         self.nrf.command_ack(Packet::Standby, true).await?;
         Ok(Standby { nrf: self.nrf })
+    }
+
+    pub async fn send(mut self) -> Result<Sender, Error> {
+        self.nrf.command_ack(Packet::TX, true).await?;
+        Ok(Sender { nrf: self.nrf })
     }
 }
 
@@ -198,4 +245,10 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("serial port error")]
     Serial(#[from] tokio_serial::Error),
+    #[error("invalid parameter: {0}")]
+    InvalidParam(String),
+    #[error("device error: {0}")]
+    Device(String),
+    #[error("no ack received for packet")]
+    PacketLost,
 }

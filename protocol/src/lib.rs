@@ -1,34 +1,50 @@
 #![no_std]
 
+/// ID to test whether the connected device is really an NRF24L01 stick.
+pub const DEVICE_ID: u32 = 0x3246524e;
+/// Device packet interface version.
+pub const CURRENT_VERSION: u32 = 1;
+
 pub enum Packet {
     Reset,
-    ResetDone, // TODO: Version information.
+    ResetDone(Version),
     Config(Configuration),
+    SetAddress([Option<[u8; 5]>; 5]),
     Standby,
-    Send,
-    Receive(ReceivedPacket),
+    RX,
+    TX,
+    Send(RadioPacket),
+    Receive(RadioPacket),
     Ack,
+    PacketLost,
     Error,
 }
 
-pub struct ReceivedPacket {
+pub struct Version {
+    pub device: u32,
+    pub version: u32,
+}
+
+pub struct RadioPacket {
     pub addr: [u8; 5],
+    pub length: u8,
     pub payload: [u8; 32],
 }
 
 pub struct Configuration {
-    pub frequency: u8,
+    pub addr_len: u8,
+    pub channel: u8,
     pub rate: DataRate,
     pub power: u8,
     pub crc: Option<CrcMode>,
     pub auto_retransmit_delay_count: Option<(u8, u8)>,
-    // TODO
 }
 
 impl Default for Configuration {
     fn default() -> Configuration {
         Configuration {
-            frequency: 0,
+            addr_len: 5,
+            channel: 0,
             rate: DataRate::R2Mbps,
             power: 3,
             crc: Some(CrcMode::OneByte),

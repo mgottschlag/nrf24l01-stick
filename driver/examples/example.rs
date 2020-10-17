@@ -6,7 +6,7 @@ use nrf24l01_stick_driver::{Configuration, CrcMode, DataRate, MAX_PAYLOAD_LEN, N
 #[tokio::main]
 async fn main() {
     let mut config = Configuration::default();
-    config.frequency = 0x32;
+    config.channel = 0x32;
     config.rate = DataRate::R2Mbps;
     config.power = 3;
     config.crc = Some(CrcMode::OneByte);
