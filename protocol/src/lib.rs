@@ -1,10 +1,13 @@
 #![no_std]
 
+use serde::{Deserialize, Serialize};
+
 /// ID to test whether the connected device is really an NRF24L01 stick.
 pub const DEVICE_ID: u32 = 0x3246524e;
 /// Device packet interface version.
 pub const CURRENT_VERSION: u32 = 1;
 
+#[derive(Serialize, Deserialize)]
 pub enum Packet {
     Reset,
     ResetDone(Version),
@@ -20,17 +23,30 @@ pub enum Packet {
     Error,
 }
 
+impl Packet {
+    pub fn serialize(&self, buffer: &mut [u8; 256]) -> Option<usize> {
+        Some(postcard::to_slice(self, buffer).ok()?.len())
+    }
+
+    pub fn deserialize(&self, buffer: &[u8; 256]) -> Option<Packet> {
+        postcard::from_bytes(buffer).ok()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct Version {
     pub device: u32,
     pub version: u32,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct RadioPacket {
     pub addr: [u8; 5],
     pub length: u8,
     pub payload: [u8; 32],
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Configuration {
     pub addr_len: u8,
     pub channel: u8,
@@ -53,12 +69,14 @@ impl Default for Configuration {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum DataRate {
     R250Kbps,
     R1Mbps,
     R2Mbps,
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum CrcMode {
     OneByte,
     TwoByte,
