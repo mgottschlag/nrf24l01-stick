@@ -25,14 +25,14 @@ async fn main() {
         )
         .await
         .expect("could not set receive address");
-    let mut receive = Some(nrf24l01.receive().await.expect("could not start receiving"));
+    let mut receive = nrf24l01.receive().await.expect("could not start receiving");
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
 
     loop {
         tokio::select! {
-            packet = receive.as_mut().unwrap().receive() => {
+            packet = receive.receive() => {
                 let packet = packet.expect("could not receive packet");
                 println!("Received {:?} from {:?}", packet.payload, &packet.addr.addr[0..packet.addr.length as usize]);
             },
@@ -48,11 +48,7 @@ async fn main() {
                     line.as_bytes()
                 };
 
-                let mut send = receive.take().unwrap().send().await.expect("could not start sending");
-
-                send.send((&[0xb3u8, 0xb3u8, 0xb3u8, 0xb3u8, 0x01u8][..]).into(), payload).await.expect("could not send packet");
-
-                receive = Some(send.receive().await.expect("could not start receiving"));
+                receive.send((&[0xb3u8, 0xb3u8, 0xb3u8, 0xb3u8, 0x01u8][..]).into(), payload).await.expect("could not send packet");
             },
 
         }

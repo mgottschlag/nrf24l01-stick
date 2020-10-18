@@ -25,17 +25,53 @@ impl Packet {
 
 #[derive(Serialize, Deserialize)]
 pub enum PacketType {
+    /// Resets the NRF24L01 module and places it in standby mode.
+    ///
+    /// The host should not make any assumptions about the configuration of the radio module after
+    /// the reset call. The device responds with a `ResetDone` packet.
+    ///
+    /// Before sending a `Reset` packet, the host should wait for 200 milliseconds to let the
+    /// device resynchronize to the packet protocol.
     Reset,
+    /// Response to the Reset packet, containing information identifying the device and its
+    /// version.
     ResetDone(Version),
+    /// Configures the radio interface.
+    ///
+    /// This packet has to be sent before receiving/sending data and may only be sent while the
+    /// device is in standby mode. The device responds with an `Ack` packet.
     Config(Configuration),
+    /// Sends the addresses of the device which are used to receive packets.
+    ///
+    /// This packet may only be sent while the device is in standby mode. The device responds with
+    /// an `Ack` packet.
     SetAddress([Option<[u8; 5]>; 5]),
+    /// Places the device in standby mode where it does not listen for incoming packets.
+    ///
+    /// In standby mode, the module can still be used to send packets. The device responds with an
+    /// `Ack` packet.
     Standby,
-    RX,
-    TX,
+    /// Places the device in RX mode in which it listens for incoming packets and forwards them to
+    /// the host.
+    ///
+    /// The device responds with an `Ack` packet.
+    StartReceive,
+    /// Sent by the host to send a radio packet.
+    ///
+    /// The device responds either with `Ack` or `PacketLost`.
     Send(RadioPacket),
+    /// Sent by the device to signal reception of a radio packet.
+    ///
+    /// The device only sends this packet while in receive mode.
     Receive(RadioPacket),
+    /// Acknowledgement of a command from the host, sent by the device.
     Ack,
+    /// The device did not receive any acknowledgement packet from the destination.
     PacketLost,
+    /// An error occurred.
+    ///
+    /// When this packet is received, the host should not make any assumptions about the state of
+    /// the device and should issue a `Reset` packet.
     Error,
 }
 
