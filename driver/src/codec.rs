@@ -18,7 +18,7 @@ impl Decoder for Codec {
             if src.len() < length + 1 {
                 Ok(None)
             } else {
-                let data = src.split_off(length + 1);
+                let data = src.split_to(length + 1);
                 match Packet::deserialize(&data.as_ref()[1..]) {
                     Some(packet) => Ok(Some(packet)),
                     None => Err(Error::Device("malformed packet from device".to_owned())),
