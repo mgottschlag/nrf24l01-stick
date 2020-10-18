@@ -15,3 +15,8 @@ stm32f1xx-hal = { version = "0.6", features = ["stm32f103", "stm32-usbd", "rt"] 
 usb-device = "0.2.5"
 usbd-serial = "0.1"
 nrf24l01-stick-protocol = { path = "../protocol" }
+
+[profile]
+[profile.release]
+debug = true
+lto = true
