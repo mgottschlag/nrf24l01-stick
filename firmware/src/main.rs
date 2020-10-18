@@ -11,12 +11,17 @@ use stm32f1xx_hal::usb::{Peripheral, UsbBus, UsbBusType};
 use usb_device::bus::UsbBusAllocator;
 use usb_device::prelude::*;
 
+use adapter::Adapter;
+
+mod adapter;
+
 #[rtic::app(device = stm32f1xx_hal::stm32, peripherals = true)]
 const APP: () = {
     struct Resources {
         usb_dev: UsbDevice<'static, UsbBusType>,
         serial: usbd_serial::SerialPort<'static, UsbBusType>,
         led: gpioc::PC13<Output<PushPull>>,
+        adapter: Adapter,
     }
 
     #[init]
@@ -25,6 +30,7 @@ const APP: () = {
 
         let mut flash = ctx.device.FLASH.constrain();
         let mut rcc = ctx.device.RCC.constrain();
+        let mut afio = ctx.device.AFIO.constrain(&mut rcc.apb2);
 
         let clocks = rcc
             .cfgr
@@ -35,11 +41,12 @@ const APP: () = {
 
         assert!(clocks.usbclk_valid());
 
+        let mut gpioa = ctx.device.GPIOA.split(&mut rcc.apb2);
+        let mut gpiob = ctx.device.GPIOB.split(&mut rcc.apb2);
         let mut gpioc = ctx.device.GPIOC.split(&mut rcc.apb2);
+
         let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
         led.set_high().ok(); // Turn on
-
-        let mut gpioa = ctx.device.GPIOA.split(&mut rcc.apb2);
 
         // Force reset using the pull-up resistor on the D+ line (only for development).
         let mut usb_dp = gpioa.pa12.into_push_pull_output(&mut gpioa.crh);
@@ -69,10 +76,30 @@ const APP: () = {
             .device_class(usbd_serial::USB_CLASS_CDC)
             .build();
 
+        let radio_irq = gpiob.pb0.into_pull_up_input(&mut gpiob.crl);
+        let radio_cs = gpiob.pb1.into_push_pull_output(&mut gpiob.crl);
+        let radio_ce = gpiob.pb10.into_push_pull_output(&mut gpiob.crh);
+        let radio_sck = gpioa.pa5.into_alternate_push_pull(&mut gpioa.crl);
+        let radio_miso = gpioa.pa6.into_floating_input(&mut gpioa.crl);
+        let radio_mosi = gpioa.pa7.into_alternate_push_pull(&mut gpioa.crl);
+        let adapter = Adapter::new(
+            ctx.device.SPI1,
+            radio_irq,
+            radio_cs,
+            radio_ce,
+            radio_sck,
+            radio_miso,
+            radio_mosi,
+            clocks,
+            &mut rcc.apb2,
+            &mut afio.mapr,
+        );
+
         init::LateResources {
             usb_dev,
             serial,
             led,
+            adapter,
         }
     }
 

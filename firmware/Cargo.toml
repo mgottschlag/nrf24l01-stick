@@ -9,9 +9,9 @@ cortex-m = "0.6"
 cortex-m-rt = "0.6"
 cortex-m-rtic = "0.5.3"
 embedded-hal = "0.2.3"
-embedded-nrf24l01 = { git = "https://github.com/mgottschlag/embedded-nrf24l01", branch = "wip" }
+embedded-nrf24l01 = { git = "https://github.com/astro/embedded-nrf24l01.git" }
 panic-semihosting = "0.5"
-stm32f1xx-hal = { version = "0.6", features = ["stm32f103", "stm32-usbd", "rt"] }
+stm32f1xx-hal = { version = "0.7", features = ["stm32f103", "stm32-usbd", "rt"] }
 usb-device = "0.2.5"
 usbd-serial = "0.1"
 nrf24l01-stick-protocol = { path = "../protocol" }
