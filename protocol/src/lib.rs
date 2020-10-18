@@ -9,8 +9,8 @@ pub const CURRENT_VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
 pub struct Packet {
-    call: u8,
-    content: PacketType,
+    pub call: u8,
+    pub content: PacketType,
 }
 
 impl Packet {

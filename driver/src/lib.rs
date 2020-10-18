@@ -3,11 +3,15 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
+use futures::SinkExt;
 use thiserror::Error;
+use tokio::stream::StreamExt;
 use tokio_serial::{Serial, SerialPortSettings};
+use tokio_util::codec::{Decoder, Framed};
 
+use codec::Codec;
 pub use nrf24l01_stick_protocol::{Configuration, CrcMode, DataRate};
-use nrf24l01_stick_protocol::{PacketType, RadioPacket, CURRENT_VERSION, DEVICE_ID};
+use nrf24l01_stick_protocol::{Packet, PacketType, RadioPacket, CURRENT_VERSION, DEVICE_ID};
 
 mod codec;
 
@@ -15,7 +19,7 @@ pub const MAX_PAYLOAD_LEN: usize = 32;
 const DEFAULT_TTY: &str = "/dev/ttyUSB_nrf24l01";
 
 pub struct NRF24L01 {
-    port: Serial,
+    port: Framed<Serial, Codec>,
     addr_len: usize,
 }
 
@@ -25,7 +29,10 @@ impl NRF24L01 {
         let settings = SerialPortSettings::default();
         let mut port = Serial::from_path(device, &settings).unwrap();
         port.set_exclusive(true)?;
-        let mut nrf = NRF24L01 { port, addr_len: 5 };
+        let mut nrf = NRF24L01 {
+            port: Codec.framed(port),
+            addr_len: 5,
+        };
 
         // Wait a second to let the device synchronize to the packet protocol.
         thread::sleep(Duration::from_secs(1));
@@ -67,12 +74,23 @@ impl NRF24L01 {
 
     async fn command(
         &mut self,
-        _packet: PacketType,
+        packet: PacketType,
         _discard_rx: bool,
     ) -> Result<PacketType, Error> {
         // TODO: Discard RX queue?
-        // TODO
-        panic!("Not yet implemented.");
+        let packet = Packet {
+            call: 1,
+            content: packet,
+        };
+        self.port.send(packet).await?;
+        loop {
+            let packet = self.read_packet(Some(Duration::from_millis(100))).await?;
+            if packet.call == 1 {
+                return Ok(packet.content);
+            } else {
+                // TODO: Queue for received packets?
+            }
+        }
     }
 
     async fn command_ack(&mut self, packet: PacketType, discard_rx: bool) -> Result<(), Error> {
@@ -85,9 +103,19 @@ impl NRF24L01 {
         }
     }
 
-    async fn read_packet(&mut self, timeout: Option<Duration>) -> Result<PacketType, Error> {
-        // TODO
-        panic!("Not yet implemented.");
+    async fn read_packet(&mut self, timeout: Option<Duration>) -> Result<Packet, Error> {
+        let item = if let Some(timeout) = timeout {
+            match tokio::time::timeout(timeout, self.port.next()).await {
+                Err(_) => return Err(Error::Device("timeout".to_owned())),
+                Ok(item) => item,
+            }
+        } else {
+            self.port.next().await
+        };
+        match item {
+            Some(packet) => packet,
+            None => return Err(Error::Device("connection closed".to_owned())),
+        }
     }
 }
 
@@ -189,7 +217,13 @@ impl Receiver {
         // TODO: PacketTypes received during the last commands (e.g., during the last TX operation?)
         loop {
             let packet = self.nrf.read_packet(None).await?;
-            match packet {
+            if packet.call != 0 {
+                // The packet belonged to a call from the host.
+                return Err(Error::Device(
+                    "received unexpected response from previous call to device".to_owned(),
+                ));
+            }
+            match packet.content {
                 PacketType::Receive(packet) => {
                     return Ok(ReceivedType {
                         addr: (&packet.addr[0..self.nrf.addr_len]).into(),
