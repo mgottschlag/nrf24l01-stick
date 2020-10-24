@@ -27,6 +27,9 @@ pub type RadioSpi = Spi<SPI1, Spi1NoRemap, (RadioSck, RadioMiso, RadioMosi), u8>
 pub struct Adapter {
     nrf: StandbyMode<NRF24L01<Infallible, RadioCe, RadioCs, RadioSpi>>,
     irq: RadioIrq,
+    next_command_len: Option<usize>,
+    next_command_received: usize,
+    command_buffer: [u8; 256],
 }
 
 impl Adapter {
@@ -62,7 +65,13 @@ impl Adapter {
         let nrf = NRF24L01::new(ce, cs, spi).unwrap();
         delay(clocks.sysclk().0 / 100);
 
-        let mut adapter = Adapter { nrf, irq };
+        let mut adapter = Adapter {
+            nrf,
+            irq,
+            next_command_len: None,
+            next_command_received: 0,
+            command_buffer: [0; 256],
+        };
         adapter.configure_radio(Configuration::default());
 
         // We want to be interrupted whenever the IRQ line is pulled low.
@@ -85,7 +94,32 @@ impl Adapter {
         // Also reset the interrupt bit
     }
 
-    pub fn data_from_serial(&mut self, _data: &[u8]) {
+    pub fn data_from_serial(&mut self, mut data: &[u8]) {
+        while data.len() > 0 {
+            if let Some(len) = self.next_command_len {
+                let received = self.next_command_received;
+                let remaining = len - received;
+                if remaining >= data.len() {
+                    self.command_buffer[received..len].copy_from_slice(&data[..remaining]);
+                    self.deserialize_command();
+                    data = &data[remaining..];
+                    self.next_command_len = None;
+                } else {
+                    self.command_buffer[received..received + data.len()].copy_from_slice(data);
+                    self.next_command_received += data.len();
+                    break;
+                }
+            } else {
+                // The first byte of a packet encodes the length-1.
+                self.next_command_len = Some(data[0] as usize + 1);
+                self.next_command_received = 0;
+                data = &data[1..];
+            }
+        }
+    }
+
+    fn deserialize_command(&mut self) {
+        let _command = &self.command_buffer[0..self.next_command_len.unwrap()];
         // TODO
     }
 
