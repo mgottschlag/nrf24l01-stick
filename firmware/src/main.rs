@@ -105,25 +105,40 @@ const APP: () = {
         }
     }
 
-    #[task(binds = EXTI9_5, resources = [adapter])]
-    fn radio_irq(ctx: radio_irq::Context) {
+    #[task(binds = EXTI9_5, resources = [usb_dev, serial, adapter])]
+    fn radio_irq(mut ctx: radio_irq::Context) {
         ctx.resources.adapter.poll_radio();
+        // We might have to send packets to the host.
+        usb_poll(
+            &mut ctx.resources.usb_dev,
+            &mut ctx.resources.serial,
+            ctx.resources.adapter,
+        );
     }
 
-    #[task(binds = USB_HP_CAN_TX, resources = [usb_dev, serial])]
+    #[task(binds = USB_HP_CAN_TX, resources = [usb_dev, serial, adapter])]
     fn usb_tx(mut ctx: usb_tx::Context) {
-        usb_poll(&mut ctx.resources.usb_dev, &mut ctx.resources.serial);
+        usb_poll(
+            &mut ctx.resources.usb_dev,
+            &mut ctx.resources.serial,
+            ctx.resources.adapter,
+        );
     }
 
-    #[task(binds = USB_LP_CAN_RX0, resources = [usb_dev, serial])]
+    #[task(binds = USB_LP_CAN_RX0, resources = [usb_dev, serial, adapter])]
     fn usb_rx0(mut ctx: usb_rx0::Context) {
-        usb_poll(&mut ctx.resources.usb_dev, &mut ctx.resources.serial);
+        usb_poll(
+            &mut ctx.resources.usb_dev,
+            &mut ctx.resources.serial,
+            ctx.resources.adapter,
+        );
     }
 };
 
 fn usb_poll(
     usb_dev: &mut UsbDevice<'static, UsbBusType>,
     serial: &mut usbd_serial::SerialPort<'static, UsbBusType>,
+    adapter: &mut Adapter,
 ) {
     if !usb_dev.poll(&mut [serial]) {
         return;
@@ -131,25 +146,9 @@ fn usb_poll(
 
     let mut buf = [0u8; 64];
 
-    match serial.read(&mut buf) {
-        Ok(count) if count > 0 => {
-            // Echo back in upper case
-            for c in buf[0..count].iter_mut() {
-                if 0x61 <= *c && *c <= 0x7a {
-                    *c &= !0x20;
-                }
-            }
-
-            let mut write_offset = 0;
-            while write_offset < count {
-                match serial.write(&buf[write_offset..count]) {
-                    Ok(len) if len > 0 => {
-                        write_offset += len;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        _ => {}
+    while let Ok(count) = serial.read(&mut buf) {
+        adapter.data_from_serial(&buf[0..count]);
     }
+    adapter.send_usb_serial(serial);
+    // TODO: Do we have to poll again after a serial write?
 }

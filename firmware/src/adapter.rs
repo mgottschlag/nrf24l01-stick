@@ -85,15 +85,21 @@ impl Adapter {
         // Also reset the interrupt bit
     }
 
-    pub fn data_from_serial(&mut self) {
+    pub fn data_from_serial(&mut self, _data: &[u8]) {
         // TODO
     }
 
     pub fn send_usb_serial(&mut self, _serial: &mut usbd_serial::SerialPort<'static, UsbBusType>) {
         // TODO
+        /*match serial.write(&buf[write_offset..count]) {
+            Ok(len) if len > 0 => {
+                write_offset += len;
+            }
+            _ => {}
+        }*/
     }
 
-    pub fn configure_radio(&mut self, config: Configuration) {
+    pub fn configure_radio(&mut self, _config: Configuration) {
         // TODO: Error?
         // TODO
     }
