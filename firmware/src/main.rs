@@ -14,6 +14,7 @@ use usb_device::prelude::*;
 use adapter::Adapter;
 
 mod adapter;
+mod buffer;
 
 #[rtic::app(device = stm32f1xx_hal::stm32, peripherals = true)]
 const APP: () = {

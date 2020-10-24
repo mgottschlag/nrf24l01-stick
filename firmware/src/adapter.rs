@@ -13,7 +13,8 @@ use stm32f1xx_hal::rcc::{Clocks, APB2};
 use stm32f1xx_hal::spi::{self, Phase, Polarity, Spi, Spi1NoRemap};
 use stm32f1xx_hal::usb::UsbBusType;
 
-use nrf24l01_stick_protocol::Configuration;
+use crate::buffer::RingBuffer;
+use nrf24l01_stick_protocol::{Configuration, Packet, PacketType};
 
 pub type RadioIrq = PB0<Input<PullUp>>;
 pub type RadioCs = PB1<Output<PushPull>>;
@@ -30,6 +31,7 @@ pub struct Adapter {
     next_command_len: Option<usize>,
     next_command_received: usize,
     command_buffer: [u8; 256],
+    serial_send_buffer: RingBuffer<[u8; 1024]>,
 }
 
 impl Adapter {
@@ -71,6 +73,7 @@ impl Adapter {
             next_command_len: None,
             next_command_received: 0,
             command_buffer: [0; 256],
+            serial_send_buffer: RingBuffer::new([0; 1024]),
         };
         adapter.configure_radio(Configuration::default());
 
@@ -119,18 +122,73 @@ impl Adapter {
     }
 
     fn deserialize_command(&mut self) {
-        let _command = &self.command_buffer[0..self.next_command_len.unwrap()];
-        // TODO
+        let command = &self.command_buffer[0..self.next_command_len.unwrap()];
+        match Packet::deserialize(command) {
+            Some(packet) => self.process_command(&packet),
+            None => self.send_error(),
+        }
     }
 
-    pub fn send_usb_serial(&mut self, _serial: &mut usbd_serial::SerialPort<'static, UsbBusType>) {
-        // TODO
-        /*match serial.write(&buf[write_offset..count]) {
-            Ok(len) if len > 0 => {
-                write_offset += len;
+    fn process_command(&mut self, packet: &Packet) {
+        // We only accept commands (i.e., calls which expect a response).
+        if packet.call == 0 {
+            self.send_error();
+            return;
+        }
+
+        match &packet.content {
+            PacketType::Reset => {
+                // TODO
             }
-            _ => {}
-        }*/
+            PacketType::Config(_config) => {
+                // TODO
+            }
+            PacketType::SetAddress(_addresses) => {
+                // TODO
+            }
+            PacketType::Standby => {
+                // TODO
+            }
+            PacketType::StartReceive => {
+                // TODO
+            }
+            PacketType::Send(_radio_packet) => {
+                // TODO
+            }
+            _ => {
+                self.send_error();
+            }
+        }
+    }
+
+    fn send_error(&mut self) {
+        self.send_packet_to_usb(Packet {
+            call: 0,
+            content: PacketType::Error,
+        });
+    }
+
+    fn send_packet_to_usb(&mut self, packet: Packet) {
+        // Serialize the packet.
+        let mut buffer = [0u8; 257];
+        let length = packet.serialize(&mut buffer[1..]).unwrap();
+        buffer[0] = (length - 1) as u8;
+
+        // Append the data to the ring buffer.
+        // TODO: Can we perform any error handling here?
+        self.serial_send_buffer.append(&buffer[..length + 1]).ok();
+    }
+
+    pub fn send_usb_serial(&mut self, serial: &mut usbd_serial::SerialPort<'static, UsbBusType>) {
+        while self.serial_send_buffer.len() != 0 {
+            let data = self.serial_send_buffer.next_slice();
+            match serial.write(data) {
+                Ok(len) if len > 0 => {
+                    self.serial_send_buffer.consume(len);
+                }
+                _ => break,
+            }
+        }
     }
 
     pub fn configure_radio(&mut self, _config: Configuration) {
