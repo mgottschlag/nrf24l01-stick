@@ -14,7 +14,9 @@ impl Decoder for Codec {
         if src.len() == 0 {
             Ok(None)
         } else {
-            let length = src.as_ref()[0] as usize;
+            // We encode (length-1), not length, as that eliminates the special case where the
+            // lenght byte is 0.
+            let length = src.as_ref()[0] as usize + 1;
             if src.len() < length + 1 {
                 Ok(None)
             } else {
@@ -32,9 +34,10 @@ impl Encoder<Packet> for Codec {
     type Error = Error;
 
     fn encode(&mut self, item: Packet, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let mut buffer = [0u8; 255];
-        let length = item.serialize(&mut buffer).unwrap();
-        dst.extend_from_slice(&buffer[0..length]);
+        let mut buffer = [0u8; 257];
+        let length = item.serialize(&mut buffer[1..]).unwrap();
+        buffer[0] = (length - 1) as u8;
+        dst.extend_from_slice(&buffer[0..length + 1]);
         Ok(())
     }
 }
