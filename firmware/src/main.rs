@@ -31,6 +31,7 @@ const APP: () = {
         let mut flash = ctx.device.FLASH.constrain();
         let mut rcc = ctx.device.RCC.constrain();
         let mut afio = ctx.device.AFIO.constrain(&mut rcc.apb2);
+        let mut exti = ctx.device.EXTI;
 
         let clocks = rcc
             .cfgr
@@ -92,7 +93,8 @@ const APP: () = {
             radio_mosi,
             clocks,
             &mut rcc.apb2,
-            &mut afio.mapr,
+            &mut afio,
+            &mut exti,
         );
 
         init::LateResources {
@@ -101,6 +103,11 @@ const APP: () = {
             led,
             adapter,
         }
+    }
+
+    #[task(binds = EXTI9_5, resources = [adapter])]
+    fn radio_irq(ctx: radio_irq::Context) {
+        ctx.resources.adapter.poll_radio();
     }
 
     #[task(binds = USB_HP_CAN_TX, resources = [usb_dev, serial])]

@@ -1,12 +1,13 @@
 use core::convert::Infallible;
 
 use cortex_m::asm::delay;
+use embedded_hal::digital::v2::InputPin;
 use embedded_nrf24l01::{self, StandbyMode, NRF24L01};
-use stm32f1xx_hal::afio::MAPR;
+use stm32f1xx_hal::afio::Parts;
 use stm32f1xx_hal::gpio::gpioa::{PA5, PA6, PA7};
 use stm32f1xx_hal::gpio::gpiob::{PB0, PB1, PB10};
-use stm32f1xx_hal::gpio::{Alternate, Floating, Input, Output, PullUp, PushPull};
-use stm32f1xx_hal::pac::SPI1;
+use stm32f1xx_hal::gpio::{Alternate, Edge, ExtiPin, Floating, Input, Output, PullUp, PushPull};
+use stm32f1xx_hal::pac::{EXTI, SPI1};
 use stm32f1xx_hal::prelude::*;
 use stm32f1xx_hal::rcc::{Clocks, APB2};
 use stm32f1xx_hal::spi::{self, Phase, Polarity, Spi, Spi1NoRemap};
@@ -25,6 +26,7 @@ pub type RadioSpi = Spi<SPI1, Spi1NoRemap, (RadioSck, RadioMiso, RadioMosi), u8>
 
 pub struct Adapter {
     nrf: StandbyMode<NRF24L01<Infallible, RadioCe, RadioCs, RadioSpi>>,
+    irq: RadioIrq,
 }
 
 impl Adapter {
@@ -38,7 +40,8 @@ impl Adapter {
         mosi: RadioMosi,
         clocks: Clocks,
         apb2: &mut APB2,
-        mapr: &mut MAPR,
+        afio: &mut Parts,
+        exti: &mut EXTI,
     ) -> Self {
         // Initialize SPI.
         let spi_mode = spi::Mode {
@@ -48,7 +51,7 @@ impl Adapter {
         let spi = Spi::spi1(
             spi,
             (sck, miso, mosi),
-            mapr,
+            &mut afio.mapr,
             spi_mode,
             500.khz(),
             clocks,
@@ -59,15 +62,27 @@ impl Adapter {
         let nrf = NRF24L01::new(ce, cs, spi).unwrap();
         delay(clocks.sysclk().0 / 100);
 
-        // TODO: IRQ?
-
-        let mut adapter = Adapter { nrf };
+        let mut adapter = Adapter { nrf, irq };
         adapter.configure_radio(Configuration::default());
+
+        // We want to be interrupted whenever the IRQ line is pulled low.
+        adapter.irq.make_interrupt_source(afio);
+        adapter.irq.trigger_on_edge(exti, Edge::FALLING);
+        adapter.irq.clear_interrupt_pending_bit();
+        adapter.irq.enable_interrupt(exti);
+
         adapter
     }
 
     pub fn poll_radio(&mut self) {
         // TODO
+
+        // Reset interrupt pending bit whenever line is high to simulate level-triggered
+        // interrupts. Also reset the pending interrupt bit when the radio is in standby mode.
+        if self.irq.is_high().unwrap() {
+            self.irq.clear_interrupt_pending_bit();
+        }
+        // Also reset the interrupt bit
     }
 
     pub fn data_from_serial(&mut self) {

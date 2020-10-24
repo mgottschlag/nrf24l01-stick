@@ -8,9 +8,9 @@ edition = "2018"
 
 [dependencies]
 bytes = "0.5"
+futures = "0.3"
 nrf24l01-stick-protocol = { path = "../protocol" }
 thiserror = "1.0"
 tokio = { version = "0.2", features = [ "full" ] }
 tokio-serial = "4.3.3"
 tokio-util = { version = "0.3", features = [ "codec" ] }
-futures = "0.3"
