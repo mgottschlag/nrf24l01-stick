@@ -3,27 +3,26 @@ use core::convert::Infallible;
 use cortex_m::asm::delay;
 use embedded_hal::digital::v2::InputPin;
 use embedded_nrf24l01::{self, StandbyMode, NRF24L01};
-use stm32f1xx_hal::afio::Parts;
-use stm32f1xx_hal::gpio::gpioa::{PA5, PA6, PA7};
-use stm32f1xx_hal::gpio::gpiob::{PB0, PB1, PB10};
-use stm32f1xx_hal::gpio::{Alternate, Edge, ExtiPin, Floating, Input, Output, PullUp, PushPull};
-use stm32f1xx_hal::pac::{EXTI, SPI1};
-use stm32f1xx_hal::prelude::*;
-use stm32f1xx_hal::rcc::{Clocks, APB2};
-use stm32f1xx_hal::spi::{self, Phase, Polarity, Spi, Spi1NoRemap};
-use stm32f1xx_hal::usb::UsbBusType;
+use stm32f4xx_hal::gpio::gpioa::{PA5, PA6, PA7};
+use stm32f4xx_hal::gpio::gpioc::{PC0, PC1, PC2};
+use stm32f4xx_hal::gpio::{Alternate, Edge, ExtiPin, Input, Output, PullUp, PushPull, Speed, AF5};
+use stm32f4xx_hal::otg_hs::UsbBusType;
+use stm32f4xx_hal::prelude::*;
+use stm32f4xx_hal::rcc::Clocks;
+use stm32f4xx_hal::spi::{self, Phase, Polarity, Spi};
+use stm32f4xx_hal::stm32::{EXTI, SPI1, SYSCFG};
 
 use crate::buffer::RingBuffer;
-use nrf24l01_stick_protocol::{Configuration, Packet, PacketType};
+use nrf24l01_stick_protocol::{Configuration, ErrorCode, Packet, PacketType, RadioPacket};
 
-pub type RadioIrq = PB0<Input<PullUp>>;
-pub type RadioCs = PB1<Output<PushPull>>;
-pub type RadioCe = PB10<Output<PushPull>>;
+pub type RadioIrq = PC2<Input<PullUp>>;
+pub type RadioCs = PC1<Output<PushPull>>;
+pub type RadioCe = PC0<Output<PushPull>>;
 
-pub type RadioSck = PA5<Alternate<PushPull>>;
-pub type RadioMiso = PA6<Input<Floating>>;
-pub type RadioMosi = PA7<Alternate<PushPull>>;
-pub type RadioSpi = Spi<SPI1, Spi1NoRemap, (RadioSck, RadioMiso, RadioMosi), u8>;
+pub type RadioSck = PA5<Alternate<AF5>>;
+pub type RadioMiso = PA6<Alternate<AF5>>;
+pub type RadioMosi = PA7<Alternate<AF5>>;
+pub type RadioSpi = Spi<SPI1, (RadioSck, RadioMiso, RadioMosi)>;
 
 pub struct Adapter {
     nrf: StandbyMode<NRF24L01<Infallible, RadioCe, RadioCs, RadioSpi>>,
@@ -44,24 +43,18 @@ impl Adapter {
         miso: RadioMiso,
         mosi: RadioMosi,
         clocks: Clocks,
-        apb2: &mut APB2,
-        afio: &mut Parts,
         exti: &mut EXTI,
+        syscfg: &mut SYSCFG,
     ) -> Self {
         // Initialize SPI.
         let spi_mode = spi::Mode {
             polarity: Polarity::IdleLow,
             phase: Phase::CaptureOnFirstTransition,
         };
-        let spi = Spi::spi1(
-            spi,
-            (sck, miso, mosi),
-            &mut afio.mapr,
-            spi_mode,
-            500.khz(),
-            clocks,
-            apb2,
-        );
+        let sck = sck.set_speed(Speed::High);
+        let miso = miso.set_speed(Speed::High);
+        let mosi = mosi.set_speed(Speed::High);
+        let spi = Spi::spi1(spi, (sck, miso, mosi), spi_mode, 500.khz().into(), clocks);
 
         // Power up the NRF module and load a default configuration.
         let nrf = NRF24L01::new(ce, cs, spi).unwrap();
@@ -75,26 +68,28 @@ impl Adapter {
             command_buffer: [0; 256],
             serial_send_buffer: RingBuffer::new([0; 1024]),
         };
-        adapter.configure_radio(Configuration::default());
+        adapter.configure_radio(&Configuration::default()).ok();
 
         // We want to be interrupted whenever the IRQ line is pulled low.
-        adapter.irq.make_interrupt_source(afio);
+        adapter.irq.make_interrupt_source(syscfg);
+        adapter.irq.enable_interrupt(exti);
         adapter.irq.trigger_on_edge(exti, Edge::FALLING);
         adapter.irq.clear_interrupt_pending_bit();
-        adapter.irq.enable_interrupt(exti);
 
         adapter
     }
 
     pub fn poll_radio(&mut self) {
-        // TODO
-
         // Reset interrupt pending bit whenever line is high to simulate level-triggered
         // interrupts. Also reset the pending interrupt bit when the radio is in standby mode.
         if self.irq.is_high().unwrap() {
             self.irq.clear_interrupt_pending_bit();
+            return;
         }
-        // Also reset the interrupt bit
+        // Also reset the interrupt bit.
+        // TODO
+
+        // TODO
     }
 
     pub fn data_from_serial(&mut self, mut data: &[u8]) {
@@ -125,46 +120,43 @@ impl Adapter {
         let command = &self.command_buffer[0..self.next_command_len.unwrap()];
         match Packet::deserialize(command) {
             Some(packet) => self.process_command(&packet),
-            None => self.send_error(),
+            None => self.send_error(ErrorCode::ProtocolError),
         }
     }
 
     fn process_command(&mut self, packet: &Packet) {
         // We only accept commands (i.e., calls which expect a response).
         if packet.call == 0 {
-            self.send_error();
+            self.send_error(ErrorCode::InvalidOperation);
             return;
         }
 
-        match &packet.content {
-            PacketType::Reset => {
-                // TODO
-            }
-            PacketType::Config(_config) => {
-                // TODO
-            }
-            PacketType::SetAddress(_addresses) => {
-                // TODO
-            }
-            PacketType::Standby => {
-                // TODO
-            }
-            PacketType::StartReceive => {
-                // TODO
-            }
-            PacketType::Send(_radio_packet) => {
-                // TODO
-            }
-            _ => {
-                self.send_error();
-            }
+        let status = match &packet.content {
+            PacketType::Reset => self.reset(),
+            PacketType::Config(_config) => self.configure_radio(_config),
+            PacketType::SetAddress(_addresses) => self.set_address(_addresses),
+            PacketType::Standby => self.standby(),
+            PacketType::StartReceive => self.start_receive(),
+            PacketType::Send(radio_packet) => self.send(radio_packet),
+            _ => Err(ErrorCode::InvalidOperation),
+        };
+        self.send_ack_or_error(packet.call, status);
+    }
+
+    fn send_ack_or_error(&mut self, call: u8, status: Result<(), ErrorCode>) {
+        match status {
+            Ok(_) => self.send_packet_to_usb(Packet {
+                call,
+                content: PacketType::Ack,
+            }),
+            Err(e) => self.send_error(e),
         }
     }
 
-    fn send_error(&mut self) {
+    fn send_error(&mut self, error: ErrorCode) {
         self.send_packet_to_usb(Packet {
             call: 0,
-            content: PacketType::Error,
+            content: PacketType::Error(error),
         });
     }
 
@@ -191,8 +183,41 @@ impl Adapter {
         }
     }
 
-    pub fn configure_radio(&mut self, _config: Configuration) {
-        // TODO: Error?
+    fn reset(&mut self) -> Result<(), ErrorCode> {
         // TODO
+        Ok(())
+    }
+
+    fn configure_radio(&mut self, _config: &Configuration) -> Result<(), ErrorCode> {
+        // Check whether we are in standby mode.
+        // TODO
+
+        // Apply the configuration.
+        // TODO
+        Ok(())
+    }
+
+    fn set_address(&mut self, _addresses: &[Option<[u8; 5]>; 5]) -> Result<(), ErrorCode> {
+        // Check whether we are in standby mode.
+        // TODO
+
+        // Set the addresses.
+        // TODO
+        Ok(())
+    }
+
+    fn standby(&mut self) -> Result<(), ErrorCode> {
+        // TODO
+        Ok(())
+    }
+
+    fn start_receive(&mut self) -> Result<(), ErrorCode> {
+        // TODO
+        Ok(())
+    }
+
+    fn send(&mut self, _packet: &RadioPacket) -> Result<(), ErrorCode> {
+        // TODO
+        Ok(())
     }
 }

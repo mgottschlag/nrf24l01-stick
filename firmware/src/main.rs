@@ -2,12 +2,11 @@
 #![no_main]
 #![no_std]
 
-use cortex_m::asm::delay;
 use embedded_hal::digital::v2::OutputPin;
 use panic_semihosting as _;
-use stm32f1xx_hal::gpio::{gpioc, Output, PushPull};
-use stm32f1xx_hal::prelude::*;
-use stm32f1xx_hal::usb::{Peripheral, UsbBus, UsbBusType};
+use stm32f4xx_hal::gpio::{gpiog, Output, PushPull};
+use stm32f4xx_hal::otg_hs::{UsbBus, UsbBusType, USB};
+use stm32f4xx_hal::prelude::*;
 use usb_device::bus::UsbBusAllocator;
 use usb_device::prelude::*;
 
@@ -16,55 +15,49 @@ use adapter::Adapter;
 mod adapter;
 mod buffer;
 
-#[rtic::app(device = stm32f1xx_hal::stm32, peripherals = true)]
+#[rtic::app(device = stm32f4xx_hal::stm32, peripherals = true)]
 const APP: () = {
     struct Resources {
         usb_dev: UsbDevice<'static, UsbBusType>,
         serial: usbd_serial::SerialPort<'static, UsbBusType>,
-        led: gpioc::PC13<Output<PushPull>>,
+        led: gpiog::PG13<Output<PushPull>>,
         adapter: Adapter,
     }
 
     #[init]
     fn init(ctx: init::Context) -> init::LateResources {
+        static mut EP_MEMORY: [u32; 1024] = [0; 1024];
         static mut USB_BUS: Option<UsbBusAllocator<UsbBusType>> = None;
 
-        let mut flash = ctx.device.FLASH.constrain();
-        let mut rcc = ctx.device.RCC.constrain();
-        let mut afio = ctx.device.AFIO.constrain(&mut rcc.apb2);
+        let rcc = ctx.device.RCC.constrain();
         let mut exti = ctx.device.EXTI;
+        let mut syscfg = ctx.device.SYSCFG;
 
         let clocks = rcc
             .cfgr
             .use_hse(8.mhz())
-            .sysclk(48.mhz())
-            .pclk1(24.mhz())
-            .freeze(&mut flash.acr);
+            .sysclk(168.mhz())
+            .pclk1(48.mhz())
+            .require_pll48clk()
+            .freeze();
 
-        assert!(clocks.usbclk_valid());
+        let gpioa = ctx.device.GPIOA.split();
+        let gpiob = ctx.device.GPIOB.split();
+        let gpioc = ctx.device.GPIOC.split();
+        let gpiog = ctx.device.GPIOG.split();
 
-        let mut gpioa = ctx.device.GPIOA.split(&mut rcc.apb2);
-        let mut gpiob = ctx.device.GPIOB.split(&mut rcc.apb2);
-        let mut gpioc = ctx.device.GPIOC.split(&mut rcc.apb2);
-
-        let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
+        let mut led = gpiog.pg13.into_push_pull_output();
         led.set_high().ok(); // Turn on
 
-        // Force reset using the pull-up resistor on the D+ line (only for development).
-        let mut usb_dp = gpioa.pa12.into_push_pull_output(&mut gpioa.crh);
-        usb_dp.set_low().unwrap();
-        delay(clocks.sysclk().0 / 100);
-
-        let usb_dm = gpioa.pa11;
-        let usb_dp = usb_dp.into_floating_input(&mut gpioa.crh);
-
-        let usb = Peripheral {
-            usb: ctx.device.USB,
-            pin_dm: usb_dm,
-            pin_dp: usb_dp,
+        let usb = USB {
+            usb_global: ctx.device.OTG_HS_GLOBAL,
+            usb_device: ctx.device.OTG_HS_DEVICE,
+            usb_pwrclk: ctx.device.OTG_HS_PWRCLK,
+            pin_dm: gpiob.pb14.into_alternate_af12(),
+            pin_dp: gpiob.pb15.into_alternate_af12(),
         };
 
-        *USB_BUS = Some(UsbBus::new(usb));
+        *USB_BUS = Some(UsbBus::new(usb, &mut EP_MEMORY[..]));
 
         let serial = usbd_serial::SerialPort::new(USB_BUS.as_ref().unwrap());
 
@@ -78,12 +71,12 @@ const APP: () = {
             .device_class(usbd_serial::USB_CLASS_CDC)
             .build();
 
-        let radio_irq = gpiob.pb0.into_pull_up_input(&mut gpiob.crl);
-        let radio_cs = gpiob.pb1.into_push_pull_output(&mut gpiob.crl);
-        let radio_ce = gpiob.pb10.into_push_pull_output(&mut gpiob.crh);
-        let radio_sck = gpioa.pa5.into_alternate_push_pull(&mut gpioa.crl);
-        let radio_miso = gpioa.pa6.into_floating_input(&mut gpioa.crl);
-        let radio_mosi = gpioa.pa7.into_alternate_push_pull(&mut gpioa.crl);
+        let radio_irq = gpioc.pc2.into_pull_up_input();
+        let radio_cs = gpioc.pc1.into_push_pull_output();
+        let radio_ce = gpioc.pc0.into_push_pull_output();
+        let radio_sck = gpioa.pa5.into_alternate_af5();
+        let radio_miso = gpioa.pa6.into_alternate_af5();
+        let radio_mosi = gpioa.pa7.into_alternate_af5();
         let adapter = Adapter::new(
             ctx.device.SPI1,
             radio_irq,
@@ -93,9 +86,8 @@ const APP: () = {
             radio_miso,
             radio_mosi,
             clocks,
-            &mut rcc.apb2,
-            &mut afio,
             &mut exti,
+            &mut syscfg,
         );
 
         init::LateResources {
@@ -106,7 +98,7 @@ const APP: () = {
         }
     }
 
-    #[task(binds = EXTI9_5, resources = [usb_dev, serial, adapter])]
+    /*#[task(binds = EXTI0, resources = [usb_dev, serial, adapter])]
     fn radio_irq(mut ctx: radio_irq::Context) {
         ctx.resources.adapter.poll_radio();
         // We might have to send packets to the host.
@@ -115,9 +107,9 @@ const APP: () = {
             &mut ctx.resources.serial,
             ctx.resources.adapter,
         );
-    }
+    }*/
 
-    #[task(binds = USB_HP_CAN_TX, resources = [usb_dev, serial, adapter])]
+    /*#[task(binds = USB_HP_CAN_TX, resources = [usb_dev, serial, adapter])]
     fn usb_tx(mut ctx: usb_tx::Context) {
         usb_poll(
             &mut ctx.resources.usb_dev,
@@ -133,6 +125,19 @@ const APP: () = {
             &mut ctx.resources.serial,
             ctx.resources.adapter,
         );
+    }*/
+
+    #[idle(resources = [usb_dev, serial, adapter])]
+    fn idle(mut ctx: idle::Context) -> ! {
+        loop {
+            ctx.resources.adapter.poll_radio();
+            // TODO: On STM32F4xx, interrupt-based USB is broken. Use interrupts on other MCUs!
+            usb_poll(
+                &mut ctx.resources.usb_dev,
+                &mut ctx.resources.serial,
+                ctx.resources.adapter,
+            );
+        }
     }
 };
 

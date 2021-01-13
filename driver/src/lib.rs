@@ -11,7 +11,9 @@ use tokio_util::codec::{Decoder, Framed};
 
 use codec::Codec;
 pub use nrf24l01_stick_protocol::{Configuration, CrcMode, DataRate};
-use nrf24l01_stick_protocol::{Packet, PacketType, RadioPacket, CURRENT_VERSION, DEVICE_ID};
+use nrf24l01_stick_protocol::{
+    ErrorCode, Packet, PacketType, RadioPacket, CURRENT_VERSION, DEVICE_ID,
+};
 
 mod codec;
 
@@ -40,19 +42,19 @@ impl NRF24L01 {
         // Identify the device and try to reset the radio module.
         if let PacketType::ResetDone(version) = nrf.command(PacketType::Reset, true).await? {
             if version.device != DEVICE_ID {
-                return Err(Error::Device(format!(
+                return Err(Error::Protocol(format!(
                     "the device does not seem to be an NRF24L01 stick, device id {} should be {}",
                     version.device, DEVICE_ID
                 )));
             }
             if version.version != CURRENT_VERSION {
-                return Err(Error::Device(format!(
+                return Err(Error::Protocol(format!(
                     "wrong device version, version {} should be {}",
                     version.version, CURRENT_VERSION
                 )));
             }
         } else {
-            return Err(Error::Device(
+            return Err(Error::Protocol(
                 "reset failed, unexpected response".to_owned(),
             ));
         }
@@ -88,7 +90,7 @@ impl NRF24L01 {
         match response {
             PacketType::Ack => Ok(()),
             PacketType::PacketLost => Err(Error::PacketLost),
-            _ => Err(Error::Device(
+            _ => Err(Error::Protocol(
                 "unexpected packet from device during send operation".to_owned(),
             )),
         }
@@ -110,7 +112,15 @@ impl NRF24L01 {
             if packet.call == 1 {
                 return Ok(packet.content);
             } else {
-                // TODO: Queue for received packets?
+                match packet.content {
+                    PacketType::Error(code) => {
+                        return Err(code.into());
+                    }
+                    _content => {
+                        println!("Unknown response?");
+                        // TODO: Queue for received packets?
+                    }
+                }
             }
         }
     }
@@ -119,7 +129,7 @@ impl NRF24L01 {
         let response = self.command(packet, discard_rx).await?;
         match response {
             PacketType::Ack => Ok(()),
-            _ => Err(Error::Device(
+            _ => Err(Error::Protocol(
                 "unexpected response type instead of ACK".to_owned(),
             )),
         }
@@ -128,7 +138,7 @@ impl NRF24L01 {
     async fn read_packet(&mut self, timeout: Option<Duration>) -> Result<Packet, Error> {
         let item = if let Some(timeout) = timeout {
             match tokio::time::timeout(timeout, self.port.next()).await {
-                Err(_) => return Err(Error::Device("timeout".to_owned())),
+                Err(_) => return Err(Error::Protocol("timeout".to_owned())),
                 Ok(item) => item,
             }
         } else {
@@ -136,7 +146,7 @@ impl NRF24L01 {
         };
         match item {
             Some(packet) => packet,
-            None => return Err(Error::Device("connection closed".to_owned())),
+            None => return Err(Error::Protocol("connection closed".to_owned())),
         }
     }
 }
@@ -201,7 +211,7 @@ impl Receiver {
             let packet = self.nrf.read_packet(None).await?;
             if packet.call != 0 {
                 // The packet belonged to a call from the host.
-                return Err(Error::Device(
+                return Err(Error::Protocol(
                     "received unexpected response from previous call to device".to_owned(),
                 ));
             }
@@ -215,7 +225,7 @@ impl Receiver {
                 _ => {
                     // We should never receive any other type of packet, so we should treat this as
                     // an error.
-                    return Err(Error::Device(
+                    return Err(Error::Protocol(
                         "received other packet from device during receive operation".to_owned(),
                     ));
                 }
@@ -268,8 +278,22 @@ pub enum Error {
     Serial(#[from] tokio_serial::Error),
     #[error("invalid parameter: {0}")]
     InvalidParam(String),
+    #[error("protocol error: {0}")]
+    Protocol(String),
     #[error("device error: {0}")]
-    Device(String),
+    Device(&'static str),
     #[error("no ack received for packet")]
     PacketLost,
+}
+
+impl From<ErrorCode> for Error {
+    fn from(e: ErrorCode) -> Error {
+        Error::Device(match e {
+            ErrorCode::InvalidState => "invalid state",
+            ErrorCode::InvalidInput => "invalid input",
+            ErrorCode::InvalidOperation => "invalid operation",
+            ErrorCode::InternalError => "internal error",
+            ErrorCode::ProtocolError => "protocol error",
+        })
+    }
 }

@@ -72,7 +72,7 @@ pub enum PacketType {
     ///
     /// When this packet is received, the host should not make any assumptions about the state of
     /// the device and should issue a `Reset` packet.
-    Error,
+    Error(ErrorCode),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,10 +124,11 @@ pub enum CrcMode {
     TwoByte,
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
+#[derive(Serialize, Deserialize)]
+pub enum ErrorCode {
+    InvalidState,
+    InvalidInput,
+    InvalidOperation,
+    InternalError,
+    ProtocolError,
 }
