@@ -59,11 +59,11 @@ pub enum PacketType {
     /// Sent by the host to send a radio packet.
     ///
     /// The device responds either with `Ack` or `PacketLost`.
-    Send(RadioPacket),
+    Send(TxPacket),
     /// Sent by the device to signal reception of a radio packet.
     ///
     /// The device only sends this packet while in receive mode.
-    Receive(RadioPacket),
+    Receive(RxPacket),
     /// Acknowledgement of a command from the host, sent by the device.
     Ack,
     /// The device did not receive any acknowledgement packet from the destination.
@@ -82,8 +82,15 @@ pub struct Version {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct RadioPacket {
+pub struct TxPacket {
     pub addr: [u8; 5],
+    pub length: u8,
+    pub payload: [u8; 32],
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RxPacket {
+    pub pipe: u8,
     pub length: u8,
     pub payload: [u8; 32],
 }
@@ -96,6 +103,7 @@ pub struct Configuration {
     pub power: u8,
     pub crc: Option<CrcMode>,
     pub auto_retransmit_delay_count: Option<(u8, u8)>,
+    // TODO: Packet length?
 }
 
 impl Default for Configuration {
@@ -121,7 +129,7 @@ pub enum DataRate {
 #[derive(Serialize, Deserialize)]
 pub enum CrcMode {
     OneByte,
-    TwoByte,
+    TwoBytes,
 }
 
 #[derive(Serialize, Deserialize)]

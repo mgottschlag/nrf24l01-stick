@@ -12,7 +12,7 @@ use tokio_util::codec::{Decoder, Framed};
 use codec::Codec;
 pub use nrf24l01_stick_protocol::{Configuration, CrcMode, DataRate};
 use nrf24l01_stick_protocol::{
-    ErrorCode, Packet, PacketType, RadioPacket, CURRENT_VERSION, DEVICE_ID,
+    ErrorCode, Packet, PacketType, RxPacket, TxPacket, CURRENT_VERSION, DEVICE_ID,
 };
 
 mod codec;
@@ -79,7 +79,7 @@ impl NRF24L01 {
         payload_array[0..payload.len()].copy_from_slice(payload);
         let response = self
             .command(
-                PacketType::Send(RadioPacket {
+                PacketType::Send(TxPacket {
                     addr: address.addr,
                     length: payload.len() as u8,
                     payload: payload_array,
@@ -205,7 +205,7 @@ pub struct Receiver {
 }
 
 impl Receiver {
-    pub async fn receive(&mut self) -> Result<ReceivedType, Error> {
+    pub async fn receive(&mut self) -> Result<ReceivedPacket, Error> {
         // TODO: PacketTypes received during the last commands (e.g., during the last TX operation?)
         loop {
             let packet = self.nrf.read_packet(None).await?;
@@ -217,8 +217,8 @@ impl Receiver {
             }
             match packet.content {
                 PacketType::Receive(packet) => {
-                    return Ok(ReceivedType {
-                        addr: (&packet.addr[0..self.nrf.addr_len]).into(),
+                    return Ok(ReceivedPacket {
+                        pipe: packet.pipe,
                         payload: packet.payload.to_vec(),
                     });
                 }
@@ -243,8 +243,8 @@ impl Receiver {
     }
 }
 
-pub struct ReceivedType {
-    pub addr: Address,
+pub struct ReceivedPacket {
+    pub pipe: u8,
     pub payload: Vec<u8>,
 }
 

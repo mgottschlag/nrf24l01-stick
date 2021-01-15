@@ -30,11 +30,12 @@ async fn main() {
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
 
+    println!("Listening for packets:");
     loop {
         tokio::select! {
             packet = receive.receive() => {
                 let packet = packet.expect("could not receive packet");
-                println!("Received {:?} from {:?}", packet.payload, &packet.addr.addr[0..packet.addr.length as usize]);
+                println!("Received {:?} from {}", packet.payload, packet.pipe);
             },
             line = lines.next_line() => {
                 let line = line.unwrap();

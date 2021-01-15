@@ -2,9 +2,7 @@
 #![no_main]
 #![no_std]
 
-use embedded_hal::digital::v2::OutputPin;
 use panic_semihosting as _;
-use stm32f4xx_hal::gpio::{gpiog, Output, PushPull};
 use stm32f4xx_hal::otg_hs::{UsbBus, UsbBusType, USB};
 use stm32f4xx_hal::prelude::*;
 use usb_device::bus::UsbBusAllocator;
@@ -20,7 +18,6 @@ const APP: () = {
     struct Resources {
         usb_dev: UsbDevice<'static, UsbBusType>,
         serial: usbd_serial::SerialPort<'static, UsbBusType>,
-        led: gpiog::PG13<Output<PushPull>>,
         adapter: Adapter,
     }
 
@@ -36,8 +33,8 @@ const APP: () = {
         let clocks = rcc
             .cfgr
             .use_hse(8.mhz())
-            .sysclk(168.mhz())
-            .pclk1(48.mhz())
+            .sysclk(48.mhz())
+            .pclk1(12.mhz())
             .require_pll48clk()
             .freeze();
 
@@ -46,8 +43,7 @@ const APP: () = {
         let gpioc = ctx.device.GPIOC.split();
         let gpiog = ctx.device.GPIOG.split();
 
-        let mut led = gpiog.pg13.into_push_pull_output();
-        led.set_high().ok(); // Turn on
+        let led = gpiog.pg13.into_push_pull_output();
 
         let usb = USB {
             usb_global: ctx.device.OTG_HS_GLOBAL,
@@ -85,6 +81,7 @@ const APP: () = {
             radio_sck,
             radio_miso,
             radio_mosi,
+            led,
             clocks,
             &mut exti,
             &mut syscfg,
@@ -93,7 +90,6 @@ const APP: () = {
         init::LateResources {
             usb_dev,
             serial,
-            led,
             adapter,
         }
     }
@@ -137,6 +133,9 @@ const APP: () = {
                 &mut ctx.resources.serial,
                 ctx.resources.adapter,
             );
+            ctx.resources
+                .adapter
+                .send_usb_serial(&mut ctx.resources.serial);
         }
     }
 };

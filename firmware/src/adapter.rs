@@ -1,10 +1,10 @@
 use core::convert::Infallible;
 
-use cortex_m::asm::delay;
 use embedded_hal::digital::v2::InputPin;
-use embedded_nrf24l01::{self, StandbyMode, NRF24L01};
+use embedded_nrf24l01::{self, Configuration, RxMode, StandbyMode, TxMode, NRF24L01};
 use stm32f4xx_hal::gpio::gpioa::{PA5, PA6, PA7};
 use stm32f4xx_hal::gpio::gpioc::{PC0, PC1, PC2};
+use stm32f4xx_hal::gpio::gpiog::PG13;
 use stm32f4xx_hal::gpio::{Alternate, Edge, ExtiPin, Input, Output, PullUp, PushPull, Speed, AF5};
 use stm32f4xx_hal::otg_hs::UsbBusType;
 use stm32f4xx_hal::prelude::*;
@@ -13,8 +13,10 @@ use stm32f4xx_hal::spi::{self, Phase, Polarity, Spi};
 use stm32f4xx_hal::stm32::{EXTI, SPI1, SYSCFG};
 
 use crate::buffer::RingBuffer;
+use nrf24l01_stick_protocol as protocol;
 use nrf24l01_stick_protocol::{
-    Configuration, ErrorCode, Packet, PacketType, RadioPacket, Version, CURRENT_VERSION, DEVICE_ID,
+    CrcMode, DataRate, ErrorCode, Packet, PacketType, RxPacket, TxPacket, Version, CURRENT_VERSION,
+    DEVICE_ID,
 };
 
 pub type RadioIrq = PC2<Input<PullUp>>;
@@ -26,13 +28,24 @@ pub type RadioMiso = PA6<Alternate<AF5>>;
 pub type RadioMosi = PA7<Alternate<AF5>>;
 pub type RadioSpi = Spi<SPI1, (RadioSck, RadioMiso, RadioMosi)>;
 
+pub type RxLed = PG13<Output<PushPull>>;
+
 pub struct Adapter {
-    nrf: StandbyMode<NRF24L01<Infallible, RadioCe, RadioCs, RadioSpi>>,
+    standby_nrf: Option<StandbyMode<NRF24L01<Infallible, RadioCe, RadioCs, RadioSpi>>>,
+    rx_nrf: Option<RxMode<NRF24L01<Infallible, RadioCe, RadioCs, RadioSpi>>>,
+    tx_nrf: Option<TxMode<NRF24L01<Infallible, RadioCe, RadioCs, RadioSpi>>>,
     irq: RadioIrq,
     next_command_len: Option<usize>,
     next_command_received: usize,
     command_buffer: [u8; 256],
     serial_send_buffer: RingBuffer<[u8; 1024]>,
+    addr_len: usize,
+    pipes_rx_enable: [bool; 6],
+    tx_addr: [u8; 5],
+    tx_call: u8,
+    tx_was_standby: bool,
+    rx_led: RxLed,
+    led_on: bool,
 }
 
 impl Adapter {
@@ -44,6 +57,7 @@ impl Adapter {
         sck: RadioSck,
         miso: RadioMiso,
         mosi: RadioMosi,
+        mut rx_led: RxLed,
         clocks: Clocks,
         exti: &mut EXTI,
         syscfg: &mut SYSCFG,
@@ -53,26 +67,56 @@ impl Adapter {
             polarity: Polarity::IdleLow,
             phase: Phase::CaptureOnFirstTransition,
         };
-        let sck = sck.set_speed(Speed::High);
-        let miso = miso.set_speed(Speed::High);
-        let mosi = mosi.set_speed(Speed::High);
+        let cs = cs.set_speed(Speed::VeryHigh);
+        let ce = ce.set_speed(Speed::VeryHigh);
+        let sck = sck.set_speed(Speed::VeryHigh);
+        let miso = miso.set_speed(Speed::VeryHigh);
+        let mosi = mosi.set_speed(Speed::VeryHigh);
         let spi = Spi::spi1(spi, (sck, miso, mosi), spi_mode, 500.khz().into(), clocks);
 
         // Power up the NRF module and load a default configuration.
         // TODO: Error handling.
-        let nrf = NRF24L01::new(ce, cs, spi).unwrap();
-        delay(clocks.sysclk().0 / 100);
+        let mut nrf = NRF24L01::new(ce, cs, spi).unwrap();
+
+        // Do not receive anything until we have valid addresses.
+        // TODO: Error handling.
+        nrf.set_pipes_rx_enable(&[false, false, false, false, false, false])
+            .ok();
+        let addr_len = nrf.get_address_width().unwrap() as usize;
+
+        // Reset the TX address to match the address on the chip.
+        let addr = [0; 5];
+        nrf.set_tx_addr(&addr[..addr_len]).ok();
+        nrf.set_rx_addr(0, &addr[0..addr_len]).ok();
+
+        // No interrupts unless we are receiving or sending.
+        // TODO: Error handling.
+        nrf.set_interrupt_mask(true, true, true).ok();
+
+        rx_led.set_high().ok();
+        let led_on = true;
 
         let mut adapter = Adapter {
-            nrf,
+            standby_nrf: Some(nrf),
+            rx_nrf: None,
+            tx_nrf: None,
             irq,
             next_command_len: None,
             next_command_received: 0,
             command_buffer: [0; 256],
             serial_send_buffer: RingBuffer::new([0; 1024]),
+            addr_len,
+            pipes_rx_enable: [false; 6],
+            tx_addr: [0; 5],
+            tx_call: 0,
+            tx_was_standby: false,
+            rx_led,
+            led_on,
         };
         // TODO: Error handling.
-        adapter.configure_radio(&Configuration::default()).ok();
+        adapter
+            .configure_radio(&protocol::Configuration::default())
+            .ok();
 
         // We want to be interrupted whenever the IRQ line is pulled low.
         adapter.irq.make_interrupt_source(syscfg);
@@ -90,13 +134,100 @@ impl Adapter {
             self.irq.clear_interrupt_pending_bit();
             return;
         }
-        // Also reset the interrupt bit.
-        // TODO
 
-        // TODO
+        if let Err(e) = self.handle_interrupts() {
+            self.send_error(e);
+        }
+    }
+
+    fn handle_interrupts(&mut self) -> Result<(), ErrorCode> {
+        if let Some(nrf) = self.standby_nrf.as_mut() {
+            // We should not be getting any interrupts, just clear them.
+            nrf.clear_interrupts()
+                .map_err(|_| ErrorCode::InternalError)?;
+        } else if let Some(nrf) = self.rx_nrf.as_mut() {
+            // We only get RX interrupts, so we can clear all of them.
+            nrf.clear_interrupts()
+                .map_err(|_| ErrorCode::InternalError)?;
+
+            // We cleared the interrupt, so we need to completely empty the RX FIFOs.
+            while let Some(pipe) = nrf.can_read().map_err(|_| ErrorCode::InternalError)? {
+                let packet = nrf.read().map_err(|_| ErrorCode::InternalError)?;
+                let mut rx_packet = RxPacket {
+                    pipe,
+                    length: packet.len() as u8,
+                    payload: [0; 32],
+                };
+                rx_packet.payload[..rx_packet.length as usize]
+                    .copy_from_slice(&packet[..rx_packet.length as usize]);
+                Self::copy_packet_to_buffer(
+                    &mut self.serial_send_buffer,
+                    Packet {
+                        call: 0,
+                        content: PacketType::Receive(rx_packet),
+                    },
+                );
+            }
+        } else {
+            match self.tx_nrf.as_mut().unwrap().poll_send() {
+                Err(nb::Error::WouldBlock) => {
+                    // Nothing to do, try again later.
+                }
+                Err(nb::Error::Other(_)) => {
+                    self.send_error(ErrorCode::InternalError);
+                }
+                Ok(success) => {
+                    if success {
+                        self.send_packet_to_usb(Packet {
+                            call: self.tx_call,
+                            content: PacketType::Ack,
+                        });
+                    } else {
+                        self.send_packet_to_usb(Packet {
+                            call: self.tx_call,
+                            content: PacketType::PacketLost,
+                        });
+                    }
+
+                    // We are done, so we return to the previous state.
+                    let nrf = self.tx_nrf.take().unwrap();
+                    let mut standby_nrf = nrf.standby().unwrap();
+
+                    self.pipes_rx_enable[0] = false;
+                    if standby_nrf
+                        .set_pipes_rx_enable(&self.pipes_rx_enable)
+                        .is_err()
+                    {
+                        self.send_error(ErrorCode::InternalError);
+                    }
+
+                    if self.tx_was_standby {
+                        standby_nrf
+                            .set_interrupt_mask(true, true, true)
+                            .map_err(|_| ErrorCode::InternalError)?;
+                        self.standby_nrf = Some(standby_nrf);
+                    } else {
+                        standby_nrf
+                            .set_interrupt_mask(false, true, true)
+                            .map_err(|_| ErrorCode::InternalError)?;
+
+                        self.rx_nrf = Some(standby_nrf.rx().unwrap());
+
+                        // We might have received packets, so we try to poll again.
+                        self.poll_radio();
+                    }
+
+                    // We stopped executing commands during transmission, so we need to drain the
+                    // command queue.
+                    // TODO
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn data_from_serial(&mut self, mut data: &[u8]) {
+        // TODO: We have to buffer the data while we are transmitting.
         while data.len() > 0 {
             if let Some(len) = self.next_command_len {
                 let received = self.next_command_received;
@@ -141,7 +272,16 @@ impl Adapter {
             PacketType::SetAddress(_addresses) => self.set_address(_addresses),
             PacketType::Standby => self.standby(),
             PacketType::StartReceive => self.start_receive(),
-            PacketType::Send(radio_packet) => self.send(radio_packet),
+            PacketType::Send(radio_packet) => {
+                self.tx_call = packet.call; // TODO: Ugly.
+                let status = self.send(radio_packet);
+                if let Err(e) = status {
+                    Err(e)
+                } else {
+                    // Sending does not cause an immediate response.
+                    return;
+                }
+            }
             _ => Err(ErrorCode::InvalidOperation),
         };
         self.send_or_error(packet.call, status);
@@ -162,6 +302,10 @@ impl Adapter {
     }
 
     fn send_packet_to_usb(&mut self, packet: Packet) {
+        Self::copy_packet_to_buffer(&mut self.serial_send_buffer, packet);
+    }
+
+    fn copy_packet_to_buffer(target: &mut RingBuffer<[u8; 1024]>, packet: Packet) {
         // Serialize the packet.
         let mut buffer = [0u8; 257];
         let length = packet.serialize(&mut buffer[1..]).unwrap();
@@ -169,11 +313,18 @@ impl Adapter {
 
         // Append the data to the ring buffer.
         // TODO: Can we perform any error handling here?
-        self.serial_send_buffer.append(&buffer[..length + 1]).ok();
+        target.append(&buffer[..length + 1]).ok();
     }
 
     pub fn send_usb_serial(&mut self, serial: &mut usbd_serial::SerialPort<'static, UsbBusType>) {
         while self.serial_send_buffer.len() != 0 {
+            if self.led_on {
+                self.rx_led.set_low().ok();
+                self.led_on = false;
+            } else {
+                self.rx_led.set_high().ok();
+                self.led_on = true;
+            }
             let data = self.serial_send_buffer.next_slice();
             match serial.write(data) {
                 Ok(len) if len > 0 => {
@@ -186,7 +337,7 @@ impl Adapter {
 
     fn reset(&mut self) -> Result<PacketType, ErrorCode> {
         self.standby()?;
-        self.configure_radio(&Configuration::default())?;
+        self.configure_radio(&protocol::Configuration::default())?;
         self.set_address(&[None; 5])?;
         Ok(PacketType::ResetDone(Version {
             device: DEVICE_ID,
@@ -194,36 +345,175 @@ impl Adapter {
         }))
     }
 
-    fn configure_radio(&mut self, _config: &Configuration) -> Result<PacketType, ErrorCode> {
+    fn configure_radio(
+        &mut self,
+        config: &protocol::Configuration,
+    ) -> Result<PacketType, ErrorCode> {
         // Check whether we are in standby mode.
-        // TODO
+        let nrf = match self.standby_nrf.as_mut() {
+            Some(nrf) => nrf,
+            None => return Err(ErrorCode::InvalidState),
+        };
 
         // Apply the configuration.
-        // TODO
+        if config.channel > 0x3f {
+            return Err(ErrorCode::InvalidInput);
+        }
+        if config.addr_len < 3 || config.addr_len > 5 {
+            return Err(ErrorCode::InvalidInput);
+        }
+        if config.power > 3 {
+            return Err(ErrorCode::InvalidInput);
+        }
+        // TODO: Configurable address size?
+        if config.addr_len != self.addr_len as u8 {
+            return Err(ErrorCode::InvalidInput);
+        }
+        nrf.set_frequency(config.channel)
+            .map_err(|_| ErrorCode::InternalError)?;
+        nrf.set_rf(
+            match config.rate {
+                DataRate::R250Kbps => &embedded_nrf24l01::DataRate::R250Kbps,
+                DataRate::R1Mbps => &embedded_nrf24l01::DataRate::R1Mbps,
+                DataRate::R2Mbps => &embedded_nrf24l01::DataRate::R2Mbps,
+            },
+            config.power,
+        )
+        .map_err(|_| ErrorCode::InternalError)?;
+        nrf.set_crc(match config.crc {
+            None => embedded_nrf24l01::CrcMode::Disabled,
+            Some(CrcMode::OneByte) => embedded_nrf24l01::CrcMode::OneByte,
+            Some(CrcMode::TwoBytes) => embedded_nrf24l01::CrcMode::TwoBytes,
+        })
+        .map_err(|_| ErrorCode::InternalError)?;
+        if let Some((delay, count)) = config.auto_retransmit_delay_count {
+            // TODO: Check values.
+            nrf.set_auto_retransmit(delay, count)
+                .map_err(|_| ErrorCode::InternalError)?;
+        } else {
+            nrf.set_auto_retransmit(250, 3)
+                .map_err(|_| ErrorCode::InternalError)?;
+        }
+        /*nrf.set_rx_addr(0, &[0xB3, 0xB3, 0xB3, 0xB3, 0x00])
+            .map_err(|_| ErrorCode::InternalError)?;
+        nrf.set_rx_addr(1, &[0xB3, 0xB3, 0xB3, 0xB3, 0x00])
+            .map_err(|_| ErrorCode::InternalError)?;*/
+        nrf.set_auto_ack(&[true; 6])
+            .map_err(|_| ErrorCode::InternalError)?;
+        nrf.set_pipes_rx_lengths(&[None; 6])
+            .map_err(|_| ErrorCode::InternalError)?;
+        nrf.flush_rx().map_err(|_| ErrorCode::InternalError)?;
+        nrf.flush_tx().map_err(|_| ErrorCode::InternalError)?;
+
         Ok(PacketType::Ack)
     }
 
-    fn set_address(&mut self, _addresses: &[Option<[u8; 5]>; 5]) -> Result<PacketType, ErrorCode> {
+    fn set_address(&mut self, addresses: &[Option<[u8; 5]>; 5]) -> Result<PacketType, ErrorCode> {
         // Check whether we are in standby mode.
-        // TODO
+        let nrf = match self.standby_nrf.as_mut() {
+            Some(nrf) => nrf,
+            None => return Err(ErrorCode::InvalidState),
+        };
+
+        self.pipes_rx_enable = [
+            false,
+            addresses[0].is_some(),
+            addresses[1].is_some(),
+            addresses[2].is_some(),
+            addresses[3].is_some(),
+            addresses[4].is_some(),
+        ];
+        nrf.set_pipes_rx_enable(&self.pipes_rx_enable)
+            .map_err(|_| ErrorCode::InternalError)?;
 
         // Set the addresses.
-        // TODO
+        for i in 0..5 {
+            if let Some(address) = addresses[i] {
+                nrf.set_rx_addr(i + 1, &address[0..self.addr_len])
+                    .map_err(|_| ErrorCode::InternalError)?;
+            }
+        }
+
         Ok(PacketType::Ack)
     }
 
     fn standby(&mut self) -> Result<PacketType, ErrorCode> {
-        // TODO
+        if self.standby_nrf.is_some() {
+            // Nothing to do, CE is already low.
+            return Ok(PacketType::Ack);
+        }
+
+        let mut nrf = self.rx_nrf.take().unwrap();
+
+        // Disable interrupts.
+        nrf.set_interrupt_mask(true, true, true)
+            .map_err(|_| ErrorCode::InternalError)?;
+
+        self.standby_nrf = Some(nrf.standby());
+
         Ok(PacketType::Ack)
     }
 
     fn start_receive(&mut self) -> Result<PacketType, ErrorCode> {
-        // TODO
+        if self.rx_nrf.is_some() {
+            return Ok(PacketType::Ack);
+        }
+
+        let mut nrf = self.standby_nrf.take().unwrap();
+
+        // Enable RX interrupts.
+        nrf.set_interrupt_mask(false, true, true)
+            .map_err(|_| ErrorCode::InternalError)?;
+
+        self.rx_nrf = Some(nrf.rx().unwrap());
+
         Ok(PacketType::Ack)
     }
 
-    fn send(&mut self, _packet: &RadioPacket) -> Result<PacketType, ErrorCode> {
-        // TODO
-        Ok(PacketType::Ack)
+    fn send(&mut self, packet: &TxPacket) -> Result<(), ErrorCode> {
+        // Switch to standby, then to TX.
+        let (nrf_standby, was_standby) = if let Some(nrf) = self.standby_nrf.take() {
+            (nrf, true)
+        } else {
+            (self.rx_nrf.take().unwrap().standby(), false)
+        };
+
+        let mut nrf = nrf_standby.tx().unwrap();
+
+        // Prevent interrupt flood if there are received packets in the FIFO.
+        nrf.set_interrupt_mask(true, false, false)
+            .map_err(|_| ErrorCode::InternalError)?;
+
+        // Only update the address if we need to.
+        if packet.addr != self.tx_addr {
+            nrf.set_tx_addr(&packet.addr[0..self.addr_len as usize])
+                .map_err(|_| ErrorCode::InternalError)?;
+            nrf.set_rx_addr(0, &packet.addr[0..self.addr_len as usize])
+                .map_err(|_| ErrorCode::InternalError)?;
+            self.tx_addr = packet.addr;
+        }
+        // We want the first RX pipe to be enabled only while sending, otherwise we would receive
+        // all packets targeted at the other device.
+        self.pipes_rx_enable[0] = true;
+        nrf.set_pipes_rx_enable(&self.pipes_rx_enable)
+            .map_err(|_| ErrorCode::InternalError)?;
+        nrf.send(&packet.payload[0..packet.length as usize])
+            .unwrap();
+
+        // Wait until sending has failed or succeeded.
+        self.tx_nrf = Some(nrf);
+        self.tx_was_standby = was_standby;
+
+        Ok(())
     }
+
+    /*fn toggle_led(&mut self) {
+        if self.led_on {
+            self.rx_led.set_low().ok();
+            self.led_on = false;
+        } else {
+            self.rx_led.set_high().ok();
+            self.led_on = true;
+        }
+    }*/
 }
