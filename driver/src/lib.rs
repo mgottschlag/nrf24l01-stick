@@ -12,7 +12,7 @@ use tokio_util::codec::{Decoder, Framed};
 use codec::Codec;
 pub use nrf24l01_stick_protocol::{Configuration, CrcMode, DataRate};
 use nrf24l01_stick_protocol::{
-    ErrorCode, Packet, PacketType, RxPacket, TxPacket, CURRENT_VERSION, DEVICE_ID,
+    ErrorCode, Packet, PacketType, TxPacket, CURRENT_VERSION, DEVICE_ID,
 };
 
 mod codec;
@@ -117,7 +117,6 @@ impl NRF24L01 {
                         return Err(code.into());
                     }
                     _content => {
-                        println!("Unknown response?");
                         // TODO: Queue for received packets?
                     }
                 }

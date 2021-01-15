@@ -49,7 +49,10 @@ async fn main() {
                     line.as_bytes()
                 };
 
-                receive.send((&[0xb3u8, 0xb3u8, 0xb3u8, 0xb3u8, 0x01u8][..]).into(), payload).await.expect("could not send packet");
+                match receive.send((&[0xb3u8, 0xb3u8, 0xb3u8, 0xb3u8, 0x01u8][..]).into(), payload).await {
+                    Ok(()) => {},
+                    Err(e) => println!("could not send: {:?}", e),
+                }
             },
 
         }

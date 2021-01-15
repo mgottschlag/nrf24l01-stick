@@ -11,14 +11,12 @@ impl Decoder for Codec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        println!("decode: {}", src.len());
         if src.len() == 0 {
             Ok(None)
         } else {
             // We encode (length-1), not length, as that eliminates the special case where the
             // lenght byte is 0.
             let length = src.as_ref()[0] as usize + 1;
-            println!("length: {}", length);
             if src.len() < length + 1 {
                 Ok(None)
             } else {
