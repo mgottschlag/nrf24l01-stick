@@ -497,8 +497,9 @@ impl Adapter {
         self.pipes_rx_enable[0] = true;
         nrf.set_pipes_rx_enable(&self.pipes_rx_enable)
             .map_err(|_| ErrorCode::InternalError)?;
+        while !nrf.can_send().map_err(|_| ErrorCode::InternalError)? {}
         nrf.send(&packet.payload[0..packet.length as usize])
-            .unwrap();
+            .map_err(|_| ErrorCode::InternalError)?;
 
         // Wait until sending has failed or succeeded.
         self.tx_nrf = Some(nrf);
