@@ -138,9 +138,10 @@ dependencies = [
 [[package]]
 name = "embedded-nrf24l01"
 version = "0.2.0"
-source = "git+https://github.com/astro/embedded-nrf24l01.git#065f4defb3a2162aa9b9af0cec093e354fb1817a"
+source = "git+https://github.com/mgottschlag/embedded-nrf24l01.git?branch=spi-timing-hack#4de8947fef4999f87ed28da2d6ad52d020edc2e6"
 dependencies = [
  "bitfield",
+ "cortex-m",
  "embedded-hal",
  "nb 0.1.3",
 ]
