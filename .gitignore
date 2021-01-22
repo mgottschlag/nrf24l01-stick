@@ -5,3 +5,4 @@ protocol/target
 protocol/Cargo.lock
 *.swp
 .gdb_history
+hardware/nrf24l01-stick-backups
