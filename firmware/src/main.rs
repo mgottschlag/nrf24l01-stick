@@ -83,19 +83,13 @@ const APP: () = {
         }
     }
 
-    /*#[task(binds = EXTI0, resources = [usb_dev, serial, adapter])]
+    #[task(binds = EXTI2_3, resources = [usb_dev, serial, adapter])]
     fn radio_irq(mut ctx: radio_irq::Context) {
         ctx.resources.adapter.poll_radio();
         // We might have to send packets to the host.
-        usb_poll(
-            &mut ctx.resources.usb_dev,
-            &mut ctx.resources.serial,
-            ctx.resources.adapter,
-        );
-    }*/
-
-    /*#[task(binds = USB_HP_CAN_TX, resources = [usb_dev, serial, adapter])]
-    fn usb_tx(mut ctx: usb_tx::Context) {
+        ctx.resources
+            .adapter
+            .send_usb_serial(&mut ctx.resources.serial);
         usb_poll(
             &mut ctx.resources.usb_dev,
             &mut ctx.resources.serial,
@@ -103,29 +97,13 @@ const APP: () = {
         );
     }
 
-    #[task(binds = USB_LP_CAN_RX0, resources = [usb_dev, serial, adapter])]
-    fn usb_rx0(mut ctx: usb_rx0::Context) {
+    #[task(binds = USB, resources = [usb_dev, serial, adapter])]
+    fn usb(mut ctx: usb::Context) {
         usb_poll(
             &mut ctx.resources.usb_dev,
             &mut ctx.resources.serial,
             ctx.resources.adapter,
         );
-    }*/
-
-    #[idle(resources = [usb_dev, serial, adapter])]
-    fn idle(mut ctx: idle::Context) -> ! {
-        loop {
-            ctx.resources.adapter.poll_radio();
-            // TODO: On STM32F4xx, interrupt-based USB is broken. Use interrupts on other MCUs!
-            usb_poll(
-                &mut ctx.resources.usb_dev,
-                &mut ctx.resources.serial,
-                ctx.resources.adapter,
-            );
-            ctx.resources
-                .adapter
-                .send_usb_serial(&mut ctx.resources.serial);
-        }
     }
 };
 
@@ -134,15 +112,13 @@ fn usb_poll(
     serial: &mut usbd_serial::SerialPort<'static, UsbBusType>,
     adapter: &mut Adapter,
 ) {
-    if !usb_dev.poll(&mut [serial]) {
-        return;
-    }
+    usb_dev.poll(&mut [serial]);
 
     let mut buf = [0u8; 64];
-
     while let Ok(count) = serial.read(&mut buf) {
         adapter.data_from_serial(&buf[0..count]);
     }
     adapter.send_usb_serial(serial);
     // TODO: Do we have to poll again after a serial write?
+    usb_dev.poll(&mut [serial]);
 }
