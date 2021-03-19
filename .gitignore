@@ -3,6 +3,7 @@ driver/target
 driver/Cargo.lock
 protocol/target
 protocol/Cargo.lock
+target/
 *.swp
 .gdb_history
 hardware/nrf24l01-stick-backups
