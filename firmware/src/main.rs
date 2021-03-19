@@ -3,8 +3,11 @@
 #![no_std]
 
 use panic_semihosting as _;
-use stm32f4xx_hal::otg_hs::{UsbBus, UsbBusType, USB};
-use stm32f4xx_hal::prelude::*;
+use stm32l0xx_hal::exti::Exti;
+use stm32l0xx_hal::prelude::*;
+use stm32l0xx_hal::rcc;
+use stm32l0xx_hal::syscfg::SYSCFG;
+use stm32l0xx_hal::usb::{UsbBus, UsbBusType, USB};
 use usb_device::bus::UsbBusAllocator;
 use usb_device::prelude::*;
 
@@ -13,7 +16,7 @@ use adapter::Adapter;
 mod adapter;
 mod buffer;
 
-#[rtic::app(device = stm32f4xx_hal::stm32, peripherals = true)]
+#[rtic::app(device = stm32l0xx_hal::pac, peripherals = true)]
 const APP: () = {
     struct Resources {
         usb_dev: UsbDevice<'static, UsbBusType>,
@@ -23,37 +26,22 @@ const APP: () = {
 
     #[init]
     fn init(ctx: init::Context) -> init::LateResources {
-        static mut EP_MEMORY: [u32; 1024] = [0; 1024];
         static mut USB_BUS: Option<UsbBusAllocator<UsbBusType>> = None;
 
-        let rcc = ctx.device.RCC.constrain();
-        let mut exti = ctx.device.EXTI;
-        let mut syscfg = ctx.device.SYSCFG;
+        let mut rcc = ctx.device.RCC.freeze(rcc::Config::hsi16());
+        let mut syscfg = SYSCFG::new(ctx.device.SYSCFG, &mut rcc);
+        let hsi48 = rcc.enable_hsi48(&mut syscfg, ctx.device.CRS);
+        let mut exti = Exti::new(ctx.device.EXTI);
 
-        let clocks = rcc
-            .cfgr
-            .use_hse(8.mhz())
-            .sysclk(48.mhz())
-            .pclk1(12.mhz())
-            .require_pll48clk()
-            .freeze();
+        let gpioa = ctx.device.GPIOA.split(&mut rcc);
+        let gpiob = ctx.device.GPIOB.split(&mut rcc);
 
-        let gpioa = ctx.device.GPIOA.split();
-        let gpiob = ctx.device.GPIOB.split();
-        let gpioc = ctx.device.GPIOC.split();
-        let gpiog = ctx.device.GPIOG.split();
+        let tx_led = gpiob.pb4.into_push_pull_output();
+        let rx_led = gpiob.pb5.into_push_pull_output();
 
-        let led = gpiog.pg13.into_push_pull_output();
+        let usb = USB::new(ctx.device.USB, gpioa.pa11, gpioa.pa12, hsi48);
 
-        let usb = USB {
-            usb_global: ctx.device.OTG_HS_GLOBAL,
-            usb_device: ctx.device.OTG_HS_DEVICE,
-            usb_pwrclk: ctx.device.OTG_HS_PWRCLK,
-            pin_dm: gpiob.pb14.into_alternate_af12(),
-            pin_dp: gpiob.pb15.into_alternate_af12(),
-        };
-
-        *USB_BUS = Some(UsbBus::new(usb, &mut EP_MEMORY[..]));
+        *USB_BUS = Some(UsbBus::new(usb));
 
         let serial = usbd_serial::SerialPort::new(USB_BUS.as_ref().unwrap());
 
@@ -67,12 +55,12 @@ const APP: () = {
             .device_class(usbd_serial::USB_CLASS_CDC)
             .build();
 
-        let radio_irq = gpioc.pc2.into_pull_up_input();
-        let radio_cs = gpioc.pc1.into_push_pull_output();
-        let radio_ce = gpioc.pc0.into_push_pull_output();
-        let radio_sck = gpioa.pa5.into_alternate_af5();
-        let radio_miso = gpioa.pa6.into_alternate_af5();
-        let radio_mosi = gpioa.pa7.into_alternate_af5();
+        let radio_irq = gpioa.pa3.into_pull_up_input();
+        let radio_cs = gpioa.pa4.into_push_pull_output();
+        let radio_ce = gpioa.pa9.into_push_pull_output();
+        let radio_sck = gpioa.pa5;
+        let radio_miso = gpioa.pa6;
+        let radio_mosi = gpioa.pa7;
         let adapter = Adapter::new(
             ctx.device.SPI1,
             radio_irq,
@@ -81,8 +69,9 @@ const APP: () = {
             radio_sck,
             radio_miso,
             radio_mosi,
-            led,
-            clocks,
+            tx_led.downgrade(),
+            rx_led.downgrade(),
+            &mut rcc,
             &mut exti,
             &mut syscfg,
         );

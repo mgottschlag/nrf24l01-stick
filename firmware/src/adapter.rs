@@ -1,16 +1,16 @@
-use core::convert::Infallible;
-
 use embedded_hal::digital::v2::InputPin;
 use embedded_nrf24l01::{self, Configuration, RxMode, StandbyMode, TxMode, NRF24L01};
-use stm32f4xx_hal::gpio::gpioa::{PA5, PA6, PA7};
-use stm32f4xx_hal::gpio::gpioc::{PC0, PC1, PC2};
-use stm32f4xx_hal::gpio::gpiog::PG13;
-use stm32f4xx_hal::gpio::{Alternate, Edge, ExtiPin, Input, Output, PullUp, PushPull, Speed, AF5};
-use stm32f4xx_hal::otg_hs::UsbBusType;
-use stm32f4xx_hal::prelude::*;
-use stm32f4xx_hal::rcc::Clocks;
-use stm32f4xx_hal::spi::{self, Phase, Polarity, Spi};
-use stm32f4xx_hal::stm32::{EXTI, SPI1, SYSCFG};
+use stm32l0xx_hal::exti::{Exti, ExtiLine, GpioLine, TriggerEdge};
+use stm32l0xx_hal::gpio::gpioa::{PA3, PA4, PA5, PA6, PA7, PA9};
+use stm32l0xx_hal::gpio::gpiob::PB;
+use stm32l0xx_hal::gpio::{Analog, Input, Output, PullUp, PushPull, Speed};
+use stm32l0xx_hal::pac::SPI1;
+use stm32l0xx_hal::prelude::*;
+use stm32l0xx_hal::rcc::Rcc;
+use stm32l0xx_hal::spi::{self, Phase, Polarity, Spi};
+use stm32l0xx_hal::syscfg::SYSCFG;
+use stm32l0xx_hal::usb::UsbBusType;
+use void::Void;
 
 use crate::buffer::RingBuffer;
 use nrf24l01_stick_protocol as protocol;
@@ -19,21 +19,22 @@ use nrf24l01_stick_protocol::{
     DEVICE_ID,
 };
 
-pub type RadioIrq = PC2<Input<PullUp>>;
-pub type RadioCs = PC1<Output<PushPull>>;
-pub type RadioCe = PC0<Output<PushPull>>;
+pub type RadioIrq = PA3<Input<PullUp>>;
+pub type RadioCs = PA4<Output<PushPull>>;
+pub type RadioCe = PA9<Output<PushPull>>;
 
-pub type RadioSck = PA5<Alternate<AF5>>;
-pub type RadioMiso = PA6<Alternate<AF5>>;
-pub type RadioMosi = PA7<Alternate<AF5>>;
+pub type RadioSck = PA5<Analog>;
+pub type RadioMiso = PA6<Analog>;
+pub type RadioMosi = PA7<Analog>;
 pub type RadioSpi = Spi<SPI1, (RadioSck, RadioMiso, RadioMosi)>;
 
-pub type RxLed = PG13<Output<PushPull>>;
+pub type TxLed = PB<Output<PushPull>>;
+pub type RxLed = PB<Output<PushPull>>;
 
 pub struct Adapter {
-    standby_nrf: Option<StandbyMode<NRF24L01<Infallible, RadioCe, RadioCs, RadioSpi>>>,
-    rx_nrf: Option<RxMode<NRF24L01<Infallible, RadioCe, RadioCs, RadioSpi>>>,
-    tx_nrf: Option<TxMode<NRF24L01<Infallible, RadioCe, RadioCs, RadioSpi>>>,
+    standby_nrf: Option<StandbyMode<NRF24L01<Void, RadioCe, RadioCs, RadioSpi>>>,
+    rx_nrf: Option<RxMode<NRF24L01<Void, RadioCe, RadioCs, RadioSpi>>>,
+    tx_nrf: Option<TxMode<NRF24L01<Void, RadioCe, RadioCs, RadioSpi>>>,
     irq: RadioIrq,
     next_command_len: Option<usize>,
     next_command_received: usize,
@@ -44,6 +45,7 @@ pub struct Adapter {
     tx_addr: [u8; 5],
     tx_call: u8,
     tx_was_standby: bool,
+    tx_led: TxLed,
     rx_led: RxLed,
     led_on: bool,
 }
@@ -57,9 +59,10 @@ impl Adapter {
         sck: RadioSck,
         miso: RadioMiso,
         mosi: RadioMosi,
+        mut tx_led: TxLed,
         mut rx_led: RxLed,
-        clocks: Clocks,
-        exti: &mut EXTI,
+        rcc: &mut Rcc,
+        exti: &mut Exti,
         syscfg: &mut SYSCFG,
     ) -> Self {
         // Initialize SPI.
@@ -72,7 +75,7 @@ impl Adapter {
         let sck = sck.set_speed(Speed::VeryHigh);
         let miso = miso.set_speed(Speed::VeryHigh);
         let mosi = mosi.set_speed(Speed::VeryHigh);
-        let spi = Spi::spi1(spi, (sck, miso, mosi), spi_mode, 500.khz().into(), clocks);
+        let spi = Spi::spi1(spi, (sck, miso, mosi), spi_mode, 500.khz(), rcc);
 
         // Power up the NRF module and load a default configuration.
         // TODO: Error handling.
@@ -94,6 +97,7 @@ impl Adapter {
         nrf.set_interrupt_mask(true, true, true).ok();
 
         rx_led.set_high().ok();
+        tx_led.set_high().ok();
         let led_on = true;
 
         let mut adapter = Adapter {
@@ -110,6 +114,7 @@ impl Adapter {
             tx_addr: [0; 5],
             tx_call: 0,
             tx_was_standby: false,
+            tx_led,
             rx_led,
             led_on,
         };
@@ -119,10 +124,9 @@ impl Adapter {
             .ok();
 
         // We want to be interrupted whenever the IRQ line is pulled low.
-        adapter.irq.make_interrupt_source(syscfg);
-        adapter.irq.enable_interrupt(exti);
-        adapter.irq.trigger_on_edge(exti, Edge::FALLING);
-        adapter.irq.clear_interrupt_pending_bit();
+        let line = GpioLine::from_raw_line(adapter.irq.pin_number()).unwrap();
+        exti.listen_gpio(syscfg, adapter.irq.port(), line, TriggerEdge::Falling);
+        Exti::unpend(GpioLine::from_raw_line(adapter.irq.pin_number()).unwrap());
 
         adapter
     }
@@ -131,7 +135,7 @@ impl Adapter {
         // Reset interrupt pending bit whenever line is high to simulate level-triggered
         // interrupts. Also reset the pending interrupt bit when the radio is in standby mode.
         if self.irq.is_high().unwrap() {
-            self.irq.clear_interrupt_pending_bit();
+            Exti::unpend(GpioLine::from_raw_line(self.irq.pin_number()).unwrap());
             return;
         }
 
@@ -319,9 +323,11 @@ impl Adapter {
     pub fn send_usb_serial(&mut self, serial: &mut usbd_serial::SerialPort<'static, UsbBusType>) {
         while self.serial_send_buffer.len() != 0 {
             if self.led_on {
+                self.tx_led.set_low().ok();
                 self.rx_led.set_low().ok();
                 self.led_on = false;
             } else {
+                self.tx_led.set_high().ok();
                 self.rx_led.set_high().ok();
                 self.led_on = true;
             }
