@@ -74,7 +74,11 @@ impl NRF24L01 {
         self.command_ack(PacketType::Config(config), true).await
     }
 
-    async fn send(&mut self, address: Address, payload: &[u8]) -> Result<(), Error> {
+    async fn send(
+        &mut self,
+        address: Address,
+        payload: &[u8],
+    ) -> Result<Option<ReceivedPacket>, Error> {
         let mut payload_array = [0u8; 32];
         payload_array[0..payload.len()].copy_from_slice(payload);
         let response = self
@@ -88,7 +92,10 @@ impl NRF24L01 {
             )
             .await?;
         match response {
-            PacketType::Ack => Ok(()),
+            PacketType::ReceiveAck(packet) => Ok(packet.map(|packet| ReceivedPacket {
+                pipe: packet.pipe,
+                payload: packet.payload.to_vec(),
+            })),
             PacketType::PacketLost => Err(Error::PacketLost),
             _ => Err(Error::Protocol(
                 "unexpected packet from device during send operation".to_owned(),
@@ -194,7 +201,11 @@ impl Standby {
         Ok(Receiver { nrf: self.nrf })
     }
 
-    pub async fn send(&mut self, address: Address, payload: &[u8]) -> Result<(), Error> {
+    pub async fn send(
+        &mut self,
+        address: Address,
+        payload: &[u8],
+    ) -> Result<Option<ReceivedPacket>, Error> {
         self.nrf.send(address, payload).await
     }
 }
@@ -232,7 +243,11 @@ impl Receiver {
         }
     }
 
-    pub async fn send(&mut self, address: Address, payload: &[u8]) -> Result<(), Error> {
+    pub async fn send(
+        &mut self,
+        address: Address,
+        payload: &[u8],
+    ) -> Result<Option<ReceivedPacket>, Error> {
         self.nrf.send(address, payload).await
     }
 

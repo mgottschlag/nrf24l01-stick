@@ -66,6 +66,8 @@ pub enum PacketType {
     Receive(RxPacket),
     /// Acknowledgement of a command from the host, sent by the device.
     Ack,
+    /// The device received an acknowledgement packet from the destination.
+    ReceiveAck(Option<RxPacket>),
     /// The device did not receive any acknowledgement packet from the destination.
     PacketLost,
     /// An error occurred.

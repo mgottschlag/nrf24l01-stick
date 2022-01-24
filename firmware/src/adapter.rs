@@ -173,7 +173,8 @@ impl Adapter {
                 );
             }
         } else {
-            match self.tx_nrf.as_mut().unwrap().poll_send() {
+            let mut ack_payload = heapless::Vec::<u8, 32>::new();
+            match self.tx_nrf.as_mut().unwrap().poll_send(&mut ack_payload) {
                 Err(nb::Error::WouldBlock) => {
                     // Nothing to do, try again later.
                 }
@@ -182,10 +183,24 @@ impl Adapter {
                 }
                 Ok(success) => {
                     if success {
-                        self.send_packet_to_usb(Packet {
-                            call: self.tx_call,
-                            content: PacketType::Ack,
-                        });
+                        if ack_payload.len() != 0 {
+                            let mut rx_packet = RxPacket {
+                                pipe: 0,
+                                length: ack_payload.len() as u8,
+                                payload: [0; 32],
+                            };
+                            rx_packet.payload[..rx_packet.length as usize]
+                                .copy_from_slice(&ack_payload[..rx_packet.length as usize]);
+                            self.send_packet_to_usb(Packet {
+                                call: self.tx_call,
+                                content: PacketType::ReceiveAck(Some(rx_packet)),
+                            });
+                        } else {
+                            self.send_packet_to_usb(Packet {
+                                call: self.tx_call,
+                                content: PacketType::ReceiveAck(None),
+                            });
+                        }
                     } else {
                         self.send_packet_to_usb(Packet {
                             call: self.tx_call,
@@ -406,7 +421,7 @@ impl Adapter {
             .map_err(|_| ErrorCode::InternalError)?;*/
         nrf.set_auto_ack(&[true; 6])
             .map_err(|_| ErrorCode::InternalError)?;
-        nrf.set_pipes_rx_lengths(&[None; 6])
+        nrf.set_pipes_rx_lengths(&[None; 6], true)
             .map_err(|_| ErrorCode::InternalError)?;
         nrf.flush_rx().map_err(|_| ErrorCode::InternalError)?;
         nrf.flush_tx().map_err(|_| ErrorCode::InternalError)?;
@@ -504,7 +519,7 @@ impl Adapter {
         nrf.set_pipes_rx_enable(&self.pipes_rx_enable)
             .map_err(|_| ErrorCode::InternalError)?;
         while !nrf.can_send().map_err(|_| ErrorCode::InternalError)? {}
-        nrf.send(&packet.payload[0..packet.length as usize])
+        nrf.send(&packet.payload[0..packet.length as usize], Some(0))
             .map_err(|_| ErrorCode::InternalError)?;
 
         // Wait until sending has failed or succeeded.

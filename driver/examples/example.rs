@@ -49,8 +49,13 @@ async fn main() {
                     line.as_bytes()
                 };
 
-                match receive.send((&[0xb3u8, 0xb3u8, 0xb3u8, 0xb3u8, 0x01u8][..]).into(), payload).await {
-                    Ok(()) => {},
+                match receive.send((&[0xe7u8, 0xe7u8, 0xe7u8, 0xe7u8, 0xe7u8][..]).into(), payload).await {
+                    Ok(Some(ack_payload)) => {
+                        println!("Received ACK payload: {:?}", ack_payload.payload);
+                    },
+                    Ok(None) => {
+                        println!("Received no ACK payload.");
+                    },
                     Err(e) => println!("could not send: {:?}", e),
                 }
             },
