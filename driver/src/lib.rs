@@ -94,7 +94,7 @@ impl NRF24L01 {
         match response {
             PacketType::ReceiveAck(packet) => Ok(packet.map(|packet| ReceivedPacket {
                 pipe: packet.pipe,
-                payload: packet.payload.to_vec(),
+                payload: packet.payload[..packet.length as usize].to_vec(),
             })),
             PacketType::PacketLost => Err(Error::PacketLost),
             _ => Err(Error::Protocol(
@@ -229,7 +229,7 @@ impl Receiver {
                 PacketType::Receive(packet) => {
                     return Ok(ReceivedPacket {
                         pipe: packet.pipe,
-                        payload: packet.payload.to_vec(),
+                        payload: packet.payload[..packet.length as usize].to_vec(),
                     });
                 }
                 _ => {
