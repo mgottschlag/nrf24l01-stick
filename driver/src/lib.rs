@@ -30,6 +30,7 @@ impl NRF24L01 {
         // Open the serial port.
         let settings = SerialPortSettings::default();
         let mut port = Serial::from_path(device, &settings).unwrap();
+        #[cfg(not(target_os = "macos"))]
         port.set_exclusive(true)?;
         let mut nrf = NRF24L01 {
             port: Codec.framed(port),
