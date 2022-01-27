@@ -18,7 +18,7 @@ use nrf24l01_stick_protocol::{
 mod codec;
 
 pub const MAX_PAYLOAD_LEN: usize = 32;
-const DEFAULT_TTY: &str = "/dev/ttyUSB_nrf24l01";
+pub const DEFAULT_TTY: &str = "/dev/ttyUSB_nrf24l01";
 
 pub struct NRF24L01 {
     port: Framed<Serial, Codec>,
@@ -66,8 +66,8 @@ impl NRF24L01 {
         Ok(Standby { nrf })
     }
 
-    pub async fn open_default(config: Configuration) -> Result<Standby, Error> {
-        Self::open(DEFAULT_TTY, config).await
+    pub async fn open_default(config: Configuration, tty: &str) -> Result<Standby, Error> {
+        Self::open(tty, config).await
     }
 
     async fn configure(&mut self, config: Configuration) -> Result<(), Error> {

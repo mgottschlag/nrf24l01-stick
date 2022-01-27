@@ -1,7 +1,9 @@
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 
-use nrf24l01_stick_driver::{Configuration, CrcMode, DataRate, MAX_PAYLOAD_LEN, NRF24L01};
+use nrf24l01_stick_driver::{
+    Configuration, CrcMode, DataRate, DEFAULT_TTY, MAX_PAYLOAD_LEN, NRF24L01,
+};
 
 #[tokio::main]
 async fn main() {
@@ -12,7 +14,7 @@ async fn main() {
     config.crc = Some(CrcMode::OneByte);
     config.auto_retransmit_delay_count = Some((250, 3));
 
-    let mut nrf24l01 = NRF24L01::open_default(config)
+    let mut nrf24l01 = NRF24L01::open_default(config, DEFAULT_TTY)
         .await
         .expect("could not open device");
     nrf24l01
