@@ -4,10 +4,11 @@ use std::thread;
 use std::time::Duration;
 
 use futures::SinkExt;
+use futures::StreamExt;
 use thiserror::Error;
-use tokio::stream::StreamExt;
-use tokio_serial::{Serial, SerialPortSettings};
-use tokio_util::codec::{Decoder, Framed};
+use tokio_serial::SerialStream;
+use tokio_util::codec::Decoder;
+use tokio_util::codec::Framed;
 
 use codec::Codec;
 pub use nrf24l01_stick_protocol::{Configuration, CrcMode, DataRate};
@@ -21,19 +22,19 @@ pub const MAX_PAYLOAD_LEN: usize = 32;
 pub const DEFAULT_TTY: &str = "/dev/ttyUSB_nrf24l01";
 
 pub struct NRF24L01 {
-    port: Framed<Serial, Codec>,
+    port: Framed<SerialStream, Codec>,
     addr_len: usize,
 }
 
 impl NRF24L01 {
     pub async fn open<P: AsRef<Path>>(device: P, config: Configuration) -> Result<Standby, Error> {
         // Open the serial port.
-        let settings = SerialPortSettings::default();
-        let mut port = Serial::from_path(device, &settings).unwrap();
+        let tty = device.as_ref().as_os_str().to_str().unwrap();
+        let mut stream = SerialStream::open(&tokio_serial::new(tty, 9600)).unwrap();
         #[cfg(not(target_os = "macos"))]
         port.set_exclusive(true)?;
         let mut nrf = NRF24L01 {
-            port: Codec.framed(port),
+            port: Codec.framed(stream),
             addr_len: 5,
         };
 

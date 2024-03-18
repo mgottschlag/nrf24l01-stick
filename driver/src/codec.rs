@@ -1,4 +1,4 @@
-use bytes::BytesMut;
+use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::Error;
