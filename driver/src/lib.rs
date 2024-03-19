@@ -32,7 +32,7 @@ impl NRF24L01 {
         let tty = device.as_ref().as_os_str().to_str().unwrap();
         let mut stream = SerialStream::open(&tokio_serial::new(tty, 9600)).unwrap();
         #[cfg(not(target_os = "macos"))]
-        port.set_exclusive(true)?;
+        stream.set_exclusive(true)?;
         let mut nrf = NRF24L01 {
             port: Codec.framed(stream),
             addr_len: 5,
